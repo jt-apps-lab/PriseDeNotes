@@ -3,6 +3,12 @@
 Petite application de prise de notes en **thème sombre**, pour Windows, avec mise en forme riche et
 **onglets par note**. Aucune base de données : chaque note est un fichier JSON lisible et éditable à la main.
 
+## Télécharger
+
+[**Télécharger PriseDeNotes**](https://github.com/jt-apps-lab/PriseDeNotes/releases/latest)
+— dernière version pour Windows : télécharge le `.zip`, décompresse-le dans un dossier, puis lance `PriseDeNotes.exe`.
+Nécessite le [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/fr-fr/download/dotnet/8.0) (version *self-contained* disponible sur demande, elle n'en a pas besoin).
+
 ## Fonctionnalités
 
 - **Notes** — liste des titres à gauche, avec glisser-déposer pour réordonner, crayon pour renommer,
