@@ -2,8 +2,9 @@ namespace PriseDeNotes;
 
 /// <summary>
 /// Barre d'onglets dessinée à la main, dans le thème sombre : un onglet par feuille de la note,
-/// un bouton « + » fixé à droite pour en ajouter. Le clic sélectionne, le double-clic renomme,
-/// le glisser-déposer réordonne, le menu contextuel renomme et supprime.
+/// un bouton « + » fixé à droite pour en ajouter. Le clic sélectionne, le glisser-déposer réordonne,
+/// le clic droit ouvre le menu du formulaire. La barre ne dessine et ne mesure rien pour la
+/// saisie : le champ du titre d'onglet appartient au formulaire, comme celui du titre d'une note.
 /// Toutes les largeurs viennent des métriques réelles de la police : la barre reste nette
 /// quelle que soit la mise à l'échelle Windows (100 %, 150 %, 200 %).
 /// </summary>
@@ -23,16 +24,16 @@ public sealed class TabStrip : Control
     private int _dragIndex = -1;
     private int _scrollX;
     private Rectangle _plusRect;
-    private TextBox? _editor;
-    private int _editorIndex = -1;
     private Color _activeBack = ColorExt.ToColor(Theme.DefaultNoteBack, Theme.Window);
     private Color _activeFore = ColorExt.ToColor(Theme.DefaultNoteFore, Theme.Text);
 
     public event Action<int>? TabSelected;
     public event Action? AddRequested;
-    public event Action<int, string>? Renamed;
     public event Action<int, int>? MoveRequested;
     public event Action<int, Point>? ContextRequested;
+
+    /// <summary>Indique qu'un onglet est en cours de renommage : le TabStrip ne doit pas voler le focus.</summary>
+    public bool IsRenaming { get; set; }
 
     public TabStrip()
     {
@@ -69,7 +70,6 @@ public sealed class TabStrip : Control
         _tabs.Clear();
         if (tabs is not null) _tabs.AddRange(tabs);
         _selected = selectedIndex;
-        if (_editorIndex >= 0 && _editorIndex >= _tabs.Count) CancelRename();
         LayoutTabs();
         Invalidate();
     }
@@ -190,7 +190,6 @@ public sealed class TabStrip : Control
             _rects.Add(new Rectangle(x, rowTop, _widths[index], _rowH));
             x += _widths[index];
         }
-        PlaceEditor();
     }
 
     private void ScrollToShow(int index) => LayoutTabs();
@@ -274,7 +273,7 @@ public sealed class TabStrip : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        Focus();
+        if (!IsRenaming) Focus();
         if (e.Button == MouseButtons.Left && _plusRect.Contains(e.Location))
         {
             _pressedPlus = true;
@@ -284,7 +283,6 @@ public sealed class TabStrip : Control
         int index = IndexFromPoint(e.Location);
         if (e.Button == MouseButtons.Left && index >= 0)
         {
-            CommitRename();
             _pressed = index;
             _pressPoint = e.Location;
             if (index != _selected)
@@ -298,7 +296,6 @@ public sealed class TabStrip : Control
         }
         if (e.Button == MouseButtons.Right && index >= 0)
         {
-            CommitRename();
             if (index != _selected)
             {
                 _selected = index;
@@ -318,13 +315,6 @@ public sealed class TabStrip : Control
         _pressedPlus = false;
         Invalidate();
         if (_plusRect.Contains(e.Location)) AddRequested?.Invoke();
-    }
-
-    protected override void OnDoubleClick(EventArgs e)
-    {
-        base.OnDoubleClick(e);
-        int index = IndexFromPoint(PointToClient(MousePosition));
-        if (index >= 0) StartRename(index);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -361,16 +351,6 @@ public sealed class TabStrip : Control
         _hover = -1;
         _hoverPlus = false;
         Invalidate();
-    }
-
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        if (keyData == Keys.F2 && _selected >= 0)
-        {
-            StartRename(_selected);
-            return true;
-        }
-        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     // ─────────────────────────── Glisser-déposer ───────────────────────────
@@ -433,74 +413,6 @@ public sealed class TabStrip : Control
         if (target < 0) return;
         if (target > from) target--;
         if (from != target) MoveRequested?.Invoke(from, target);
-    }
-
-    // ─────────────────────────── Renommage en place ───────────────────────────
-
-    /// <summary>Pose une zone de saisie sur l'onglet, texte sélectionné.</summary>
-    public void StartRename(int index)
-    {
-        if (index < 0 || index >= _tabs.Count) return;
-        CommitRename();
-        _editorIndex = index;
-        _editor ??= new TextBox
-        {
-            BackColor = Theme.Surface2,
-            ForeColor = Theme.Text,
-            BorderStyle = BorderStyle.None,
-            Font = Font,
-            HideSelection = false,
-        };
-        _editor.Text = _tabs[index].Title;
-        if (!_editor.IsHandleCreated) Controls.Add(_editor);
-        _editor.BringToFront();
-        PlaceEditor();
-        _editor.Show();
-        _editor.Focus();
-        _editor.SelectAll();
-        Invalidate();
-    }
-
-    private void PlaceEditor()
-    {
-        if (_editor is null || _editorIndex < 0 || _editorIndex >= _rects.Count) return;
-        var r = _rects[_editorIndex];
-        int height = Math.Max(_textH, _editor.PreferredHeight);
-        _editor.SetBounds(r.Left + _pad / 2, r.Top + (r.Height - height) / 2,
-            Math.Max(S(24), r.Width - _pad), height);
-    }
-
-    /// <summary>Applique le titre saisi, si l'onglet est encore là.</summary>
-    public void CommitRename()
-    {
-        if (_editor is null || _editorIndex < 0) return;
-        int index = _editorIndex;
-        _editorIndex = -1;
-        _editor.Hide();
-        if (index >= _tabs.Count) { Invalidate(); return; }
-        var title = _editor.Text.Trim();
-        if (title.Length == 0) title = _tabs[index].Title;
-        if (title != _tabs[index].Title)
-        {
-            _tabs[index].Title = title;
-            Renamed?.Invoke(index, title);
-        }
-        LayoutTabs();
-        Invalidate();
-    }
-
-    public void CancelRename()
-    {
-        if (_editor is null || _editorIndex < 0) return;
-        _editorIndex = -1;
-        _editor.Hide();
-        Invalidate();
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) _editor?.Dispose();
-        base.Dispose(disposing);
     }
 
     // ---- diagnostics de mise en page (vérifie qu'aucun texte n'est tronqué) ----

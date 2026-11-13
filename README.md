@@ -14,8 +14,9 @@ Nécessite le [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/fr-fr/downlo
 - **Notes** — liste des titres à gauche, avec glisser-déposer pour réordonner, crayon pour renommer,
   corbeille pour supprimer, et info-bulle au survol (dates, caractères, mots, réglages).
 - **Onglets par note** — chaque note est découpée en onglets, chacun avec son propre texte :
-  le « **+ »** à droite de la barre ajoute un onglet, un **clic** l'affiche, un **double-clic** (ou F2) le renomme,
-  un **glisser-déposer** le déplace, un **clic droit** ouvre le menu (nouvel onglet, renommer, supprimer, déplacer).
+  le « **+ »** à droite de la barre ajoute un onglet, un **clic** l'affiche, un **glisser-déposer** le déplace,
+  un **clic droit** ouvre le menu (nouvel onglet, renommer, supprimer, déplacer).
+  Un titre en cours de saisie se valide par **Entrée** ou en cliquant ailleurs, et s'annule par **Échap**.
   Le dernier onglet d'une note ne se supprime pas. Police et couleurs sont partagées par toute la note.
 - **Mise en forme riche** — gras, italique, souligné, barré, alignement à gauche / centré / à droite,
   police et taille. Avec une sélection, le réglage ne touche que la sélection ; sans sélection, il s'applique à toute la note.
@@ -43,8 +44,6 @@ Nécessite le [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/fr-fr/downlo
 | `Ctrl` + `Suppr` ou `Ctrl` + `D` | supprimer la note |
 | `Ctrl` + `F` | recherche |
 | `Ctrl` + `T` | nouvel onglet |
-| `Ctrl` + `W` | fermer l'onglet |
-| `F2` | renommer l'onglet survolé |
 
 ## Compilation et exécution
 

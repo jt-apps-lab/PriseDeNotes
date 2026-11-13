@@ -24,6 +24,7 @@ public sealed class MainForm : Form
     private readonly RichTextBox _body = new();
     private TextBox _search = new();
     private TextBox _title = new();
+    private TextBox _tabTitle = new();
     private ComboBox _fontFamily = new();
     private ComboBox _fontSize = new();
     private ColorButton _btnBack = new();
@@ -75,6 +76,11 @@ public sealed class MainForm : Form
     private readonly TabStrip _tabs = new();
     private readonly ContextMenuStrip _tabMenu = new();
     private int _tabMenuIndex = -1;
+    // Onglet dont le titre est en cours de saisie dans _tabTitle : la saisie lui est liée,
+    // elle ne peut donc pas glisser sur l'onglet d'une autre note.
+    private NoteTab? _tabRenaming;
+    // Fenêtre pendant laquelle le champ de titre reprend le focus que le menu contextuel lui reprend.
+    private long _tabRenameGrace;
     private readonly StatusStrip _status = new();
     private readonly ToolStripStatusLabel _lblStatus = new();
 
@@ -238,6 +244,13 @@ public sealed class MainForm : Form
         _title.HideSelection = false;
         _title.Visible = false;
 
+        _tabTitle = DarkTextBox();
+        _tabTitle.AccessibleName = "Titre de l'onglet";
+        _tabTitle.Dock = DockStyle.None;
+        _tabTitle.BorderStyle = BorderStyle.FixedSingle;
+        _tabTitle.HideSelection = false;
+        _tabTitle.Visible = false;
+
         _fontFamily.DropDownStyle = ComboBoxStyle.DropDownList;
         _fontSize.DropDownStyle = ComboBoxStyle.DropDownList;
         foreach (var f in _fonts.Families) _fontFamily.Items.Add(f.Name);
@@ -336,11 +349,21 @@ public sealed class MainForm : Form
 
         var right = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = Theme.Window, Padding = new Padding(S(10), S(8), S(8), S(8)) };
         right.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        right.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        // Ligne de la barre d'onglets : hauteur calculée sur la police de la barre, tenue à jour ensuite.
+        var tabsRow = new RowStyle(SizeType.Absolute, _tabs.PreferredStripHeight);
+        right.RowStyles.Add(tabsRow);
         right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        _tabs.Margin = new Padding(S(3), 0, S(3), 0);
+        // Hôte de la barre : le champ de titre d'onglet y est posé librement sur l'onglet ciblé,
+        // comme le champ de titre de note au-dessus de la liste.
+        var tabsHost = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Window, Margin = new Padding(S(3), 0, S(3), 0) };
+        _tabs.Margin = Padding.Empty;
         _tabs.Dock = DockStyle.Fill;
-        right.Controls.Add(_tabs, 0, 0);
+        tabsHost.Controls.Add(_tabs);
+        tabsHost.Controls.Add(_tabTitle);
+        right.Controls.Add(tabsHost, 0, 0);
+        void SizeTabsRow() => tabsRow.Height = _tabs.Visible ? _tabs.PreferredStripHeight : 0;
+        _tabs.SizeChanged += (_, _) => SizeTabsRow();
+        _tabs.VisibleChanged += (_, _) => SizeTabsRow();
         right.Controls.Add(NoteBox(_body, _gutter), 0, 1);
 
         var split = new SplitContainer
@@ -625,7 +648,6 @@ public sealed class MainForm : Form
         _tabs.AccessibleName = "Onglets de la note";
         _tabs.TabSelected += SelectTab;
         _tabs.AddRequested += AddTab;
-        _tabs.Renamed += (_, _) => { if (_current is not null) _store.Save(_current); };
         _tabs.MoveRequested += MoveTab;
         _tabs.ContextRequested += ShowTabMenu;
         _tabs.MouseMove += Tabs_MouseMove;
@@ -686,6 +708,51 @@ public sealed class MainForm : Form
             }
         };
 
+        // Titre d'onglet : mêmes règles que le titre de note — Entrée valide, Échap annule,
+        // un clic ailleurs applique aussi. Le champ est lié à l'onglet ouvert (_tabRenaming).
+        _tabTitle.Leave += (_, _) =>
+        {
+            // Le menu contextuel rend le focus à la barre juste après l'ouverture : pendant ce délai,
+            // le champ le reprend au lieu de se fermer et d'appliquer le titre.
+            if (_tabRenaming is not null && Environment.TickCount64 < _tabRenameGrace)
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    if (IsDisposed || _tabRenaming is null) return;
+                    _tabTitle.Focus();
+                    _tabTitle.SelectAll();
+                }));
+                return;
+            }
+            // On ne commit que si le focus va véritablement ailleurs (clic en dehors du champ).
+            // BeginInvoke : on attend la fin du message pour que le nouveau contrôle focussé soit connu.
+            BeginInvoke((Action)(() =>
+            {
+                if (IsDisposed || _tabRenaming is null) return;
+                // Si le champ a retrouvé le focus entre-temps, on ne ferme pas.
+                if (_tabTitle.Focused) return;
+                CommitTabRename();
+            }));
+        };
+        _tabTitle.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                CommitTabRename();
+                _tabTitle.Hide();
+                _body.Focus();
+                e.SuppressKeyPress = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                _tabRenaming = null;
+                _tabs.IsRenaming = false;
+                _tabTitle.Hide();
+                _body.Focus();
+                e.SuppressKeyPress = true;
+            }
+        };
+
         _body.TextChanged += (_, _) =>
         {
             _gutter.RefreshNumbers();
@@ -709,9 +776,9 @@ public sealed class MainForm : Form
 
         _autosave.Tick += (_, _) => { _autosave.Stop(); Commit(); };
 
-        Deactivate += (_, _) => _dateTip.HideTip();
-        Move += (_, _) => _dateTip.HideTip();
-        Resize += (_, _) => _dateTip.HideTip();
+        Deactivate += (_, _) => { _dateTip.HideTip(); CloseTabRename(); };
+        Move += (_, _) => { _dateTip.HideTip(); CloseTabRename(); };
+        Resize += (_, _) => { _dateTip.HideTip(); CloseTabRename(); };
 
         FormClosing += (_, _) =>
         {
@@ -731,10 +798,6 @@ public sealed class MainForm : Form
             case Keys.Control | Keys.D: DeleteNote(); return true;
             case Keys.Control | Keys.F: _search.Focus(); _search.SelectAll(); return true;
             case Keys.Control | Keys.T: AddTab(); return true;
-            case Keys.Control | Keys.W:
-                var note = _current;
-                RemoveTab(note is null ? -1 : note.IndexOfTab(note.ActiveTabId));
-                return true;
             default: return base.ProcessCmdKey(ref msg, keyData);
         }
     }
@@ -779,10 +842,10 @@ public sealed class MainForm : Form
             "· Le crayon dans la liste permet de renommer une note.\n" +
             "· En haut : police, taille, puis les deux pastilles couleur (fond de la note / couleur de la police).\n" +
             "· Sélectionnez du texte pour ne changer que ce passage ; sans sélection, c'est toute la note.\n\n" +
-            "Onglets : le « + » à droite de la barre ajoute un onglet, un clic l'affiche, le double-clic le renomme,\n" +
+            "Onglets : le « + » à droite de la barre ajoute un onglet, un clic l'affiche,\n" +
             "le glisser-déposer le déplace, le clic droit le renomme ou le supprime.\n\n" +
             "Raccourcis : Ctrl+N nouvelle note · Ctrl+S enregistrer · Ctrl+Suppr supprimer · Ctrl+F rechercher ·\n" +
-            "Ctrl+T nouvel onglet · Ctrl+W fermer l'onglet.";
+            "Ctrl+T nouvel onglet.";
         _store.Save(n);
         _all.Add(n);
     }
@@ -836,6 +899,7 @@ public sealed class MainForm : Form
         if (n is not null && ReferenceEquals(_current, n)) return;
         Commit();
         _title.Hide();
+        _tabTitle.Hide();
         _current = n;
         _loading = true;
         _manualTitleChanged = false;
@@ -894,6 +958,9 @@ public sealed class MainForm : Form
     /// <summary>Recopie la barre d'onglets sur la note courante (couleurs comprises).</summary>
     private void RefreshTabs()
     {
+        // Le champ de titre est posé sur un onglet précis : il se ferme quand la barre est recalée.
+        if (_tabTitle.Visible) CommitTabRename();
+        _tabTitle.Hide();
         var n = _current;
         _tabs.Visible = n is not null;
         _tabs.Enabled = n is not null;
@@ -995,11 +1062,63 @@ public sealed class MainForm : Form
         UpdateStatus("Onglet déplacé");
     }
 
+    /// <summary>Ferme le champ de titre d'onglet ouvert (fenêtre déplacée, redimensionnée, séparateur bougé…).</summary>
+    private void CloseTabRename()
+    {
+        if (_tabTitle.Visible) CommitTabRename();
+    }
+
     private void BeginTabRename(int index)
     {
-        if (_current is null) return;
+        var n = _current;
+        if (n is null || index < 0 || index >= n.Tabs.Count) return;
+        // Toujours repartir de l'onglet demandé : un champ ouvert appartient à un autre onglet,
+        // le garder ferait écrire son texte sur le mauvais onglet.
+        CommitTabRename();
         Commit();
-        _tabs.StartRename(index);
+        var tab = n.Tabs[index];
+        _tabRenaming = tab;
+        _tabs.IsRenaming = true;
+        _tabTitle.Text = tab.Title;
+        _tabTitle.BackColor = ColorExt.ToColor(n.BackColor, Theme.Surface2);
+        _tabTitle.ForeColor = ColorExt.ToColor(n.ForeColor, Theme.Text);
+        var bounds = _tabs.TabBounds(index);
+        _tabTitle.Bounds = new Rectangle(_tabs.Left + bounds.X,
+            _tabs.Top + bounds.Y + (bounds.Height - _tabTitle.PreferredHeight) / 2,
+            Math.Max(S(70), bounds.Width - S(6)), _tabTitle.PreferredHeight);
+        _tabTitle.Show();
+        _tabTitle.BringToFront();
+        _tabRenameGrace = Environment.TickCount64 + 700;
+        // Le menu contextuel rend le focus au contrôle précédent une fois son clic terminé :
+        // on donne le focus après la fin du message, comme pour le titre de note.
+        BeginInvoke((Action)(() =>
+        {
+            if (IsDisposed || !ReferenceEquals(_tabRenaming, tab)) return;
+            _tabTitle.Focus();
+            _tabTitle.SelectAll();
+        }));
+    }
+
+    /// <summary>Écrit le titre saisi dans l'onglet qui a ouvert le champ, puis enregistre sa note.</summary>
+    private void CommitTabRename()
+    {
+        var tab = _tabRenaming;
+        _tabRenaming = null;
+        _tabs.IsRenaming = false;
+        _tabTitle.Hide();   // le champ ne survit jamais à la fin du renommage
+        if (tab is null) return;
+        // On écrit uniquement si l'onglet existe encore, dans la note qui le possède — jamais dans
+        // celle qui se trouve affichée à ce moment-là.
+        var owner = _all.FirstOrDefault(n => n.Tabs.Contains(tab));
+        if (owner is null) return;
+        var title = _tabTitle.Text.Trim();
+        if (title.Length > 0 && title != tab.Title)
+        {
+            tab.Title = title;
+            _store.Save(owner);
+            UpdateStatus($"Onglet « {title} »");
+        }
+        RefreshTabs();
     }
 
     private void Tabs_MouseMove(object? sender, MouseEventArgs e)
