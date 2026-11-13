@@ -117,13 +117,20 @@ public sealed class MainForm : Form
         var ui = _store.LoadUi();
         ApplyUi(ui);
         WireEvents();
+        ReloadNotes();
+        RebuildView(_all.FirstOrDefault());
+    }
+
+    /// <summary>Relit toutes les notes depuis le disque, en gardant l'ordre mémorisé.</summary>
+    private void ReloadNotes()
+    {
         var notes = _store.LoadAll().OrderByDescending(n => n.ModifiedAt).ToList();
         // Les notes nouvelles ou absentes de l'ordre mémorisé restent en tête.
-        var order = ui?.NoteOrder ?? new List<Guid>();
+        var order = _store.LoadUi()?.NoteOrder ?? new List<Guid>();
+        _all.Clear();
         _all.AddRange(notes.Where(n => !order.Contains(n.Id)));
         _all.AddRange(notes.Where(n => order.Contains(n.Id)).OrderBy(n => order.IndexOf(n.Id)));
         if (_all.Count == 0) SeedFirstNote();
-        RebuildView(_all.FirstOrDefault());
     }
 
     // ─────────────────────────── Construction de l'interface ───────────────────────────
@@ -1231,8 +1238,20 @@ public sealed class MainForm : Form
     {
         Commit();
         _dateTip.HideTip();
-        using var overview = new NotesOverviewForm(_all) { Icon = Icon };
-        if (overview.ShowDialog(this) != DialogResult.OK || overview.SelectedNote is not Note note) return;
+        using var overview = new NotesOverviewForm(_all, _store) { Icon = Icon };
+        var result = overview.ShowDialog(this);
+        if (overview.Imported)
+        {
+            Guid? opened = _current?.Id;
+            Commit();
+            _current = null;          // les instances en mémoire sont périmées après un import
+            ReloadNotes();
+            RebuildView(_all.FirstOrDefault(n => n.Id == opened) ?? _all.FirstOrDefault());
+            UpdateStatus("Notes restaurées");
+            _body.Focus();
+            return;
+        }
+        if (result != DialogResult.OK || overview.SelectedNote is not Note note) return;
         _search.Clear();
         RebuildView(note);
         _body.Focus();

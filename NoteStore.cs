@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -26,7 +27,9 @@ public sealed class NoteStore
         System.IO.Directory.CreateDirectory(Folder);
     }
 
-    private string FileFor(Guid id) => Path.Combine(Folder, id.ToString("N") + ".json");
+    public string PathFor(Guid id) => Path.Combine(Folder, id.ToString("N") + ".json");
+
+    private static string Serialize(Note note) => JsonSerializer.Serialize(note, JsonOpts);
 
     public List<Note> LoadAll()
     {
@@ -84,13 +87,115 @@ public sealed class NoteStore
     public void Save(Note note)
     {
         note.ModifiedAt = DateTime.Now;
-        File.WriteAllText(FileFor(note.Id), JsonSerializer.Serialize(note, JsonOpts), Encoding.UTF8);
+        File.WriteAllText(PathFor(note.Id), Serialize(note), Encoding.UTF8);
     }
 
     public void Delete(Note note)
     {
-        var path = FileFor(note.Id);
+        var path = PathFor(note.Id);
         if (File.Exists(path)) File.Delete(path);
+    }
+
+    /// <summary>Le JSON d'une note : le fichier sur disque s'il existe (le plus fidèle), sinon une sérialisation.</summary>
+    public string JsonFor(Note note)
+    {
+        try
+        {
+            var path = PathFor(note.Id);
+            if (File.Exists(path)) return File.ReadAllText(path);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return Serialize(note);
+    }
+
+    /// <summary>Relit un JSON de note (mêmes règles que le chargement), sans rien écrire. Null si illisible.</summary>
+    public Note? ParseNote(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var n = document.RootElement.Deserialize<Note>(JsonOpts);
+            if (n is null) return null;
+            if (n.Id == Guid.Empty) n.Id = Guid.NewGuid();
+
+            // Migration d'avant les onglets : le texte devient l'onglet 1 de la note.
+            if (n.Tabs.Count == 0)
+            {
+                var tab = new NoteTab { Title = "Onglet 1", Content = n.LegacyContent, RichText = n.LegacyRichText };
+                n.Tabs.Add(tab);
+                n.ActiveTabId = tab.Id;
+            }
+            n.LegacyContent = "";
+            n.LegacyRichText = null;
+            n.EnsureTabs();
+
+            if (!document.RootElement.TryGetProperty("autoTitle", out _) && n.Title == "Nouvelle note")
+            {
+                n.AutoTitle = true;
+                n.Title = Note.TitleFromContent(n.Content);
+            }
+            if (string.IsNullOrWhiteSpace(n.Title)) n.Title = "Sans titre";
+            foreach (var tab in n.Tabs)
+                if (string.IsNullOrWhiteSpace(tab.Title)) tab.Title = n.NextTabTitle();
+            n.EnsureTabs();
+            return n;
+        }
+        catch
+        {
+            // contenu illisible : l'appelant compte l'élément ignoré
+            return null;
+        }
+    }
+
+    /// <summary>Import depuis des fichiers : un zip créé par « Archiver », ou des .json de note à l'unité.</summary>
+    public ImportResult Import(IEnumerable<string> paths)
+    {
+        var result = new ImportResult();
+        foreach (var path in paths)
+        {
+            try
+            {
+                var extension = Path.GetExtension(path).ToLowerInvariant();
+                if (extension == ".zip")
+                {
+                    using var archive = ZipFile.OpenRead(path);
+                    foreach (var entry in archive.Entries)
+                    {
+                        if (entry.Name.Length == 0) continue;                       // dossier dans l'archive
+                        if (!entry.Name.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) { result.Skipped++; continue; }
+                        using var stream = entry.Open();
+                        using var reader = new StreamReader(stream);
+                        AddImported(result, reader.ReadToEnd());
+                    }
+                }
+                else if (extension == ".json") AddImported(result, File.ReadAllText(path));
+                else result.Skipped++;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException)
+            {
+                result.Skipped++;
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Ajoute une note importée sous un identifiant neuf : une restauration n'écrase jamais une note existante.</summary>
+    private void AddImported(ImportResult result, string json)
+    {
+        var note = ParseNote(json);
+        if (note is null) { result.Skipped++; return; }
+        note.Id = Guid.NewGuid();
+        note.CreatedAt = DateTime.Now;
+        try
+        {
+            Save(note);
+            result.Notes.Add(note);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            result.Skipped++;
+        }
     }
 
     public UiState? LoadUi()
@@ -104,6 +209,13 @@ public sealed class NoteStore
         try { File.WriteAllText(UiFile, JsonSerializer.Serialize(ui, JsonOpts), Encoding.UTF8); }
         catch { /* fenêtre fermée : non critique */ }
     }
+}
+
+/// <summary>Ce qu'un import a rapporté : les notes créées, et le nombre d'éléments ignorés.</summary>
+public sealed class ImportResult
+{
+    public List<Note> Notes { get; } = new();
+    public int Skipped { get; set; }
 }
 
 public sealed class UiState

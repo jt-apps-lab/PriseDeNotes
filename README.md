@@ -22,6 +22,12 @@ Nécessite le [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/fr-fr/downlo
 - **Couleurs** — fond de la note et couleur de police choisis par note, repris dans la liste et les onglets.
 - **Recherche** — filtre la liste sur le titre et le contenu de **tous les onglets**.
 - **Vue « Voir tout »** — toutes les notes en cartes, tri par lignes ou par colonnes, recherche dans les titres et les textes.
+- **Archiver et restaurer** — dans « Voir tout », le bouton **Archiver** propose *Archiver toutes les notes*
+  ou *Passer en mode sélection* ; on y entre aussi par un **appui long** sur une carte (cartes entourées de bleu,
+  coche en haut à droite), puis un **clic** ajoute ou retire une note et **Archiver (n)** emballe le choix.
+  L'archive est un zip proposé à côté de l'exe et enregistrable ailleurs ; « Restaurer » relit un zip
+  ou un fichier `.json` : les notes importées prennent un identifiant neuf et n'écrasent jamais une note existante.
+  `Échap` quitte le mode sélection.
 - **Confort** — numéros de lignes, retour à la ligne automatique, enregistrement automatique,
   titre de note calculé automatiquement sur les premiers mots (dès qu'on le modifie à la main, il devient fixe),
   confirmation de suppression désactivable.
@@ -59,6 +65,10 @@ Dans `%APPDATA%\PriseDeNotes\` :
   leur texte devient l'**onglet 1** de la note.
 - `ui.json` — taille et position de la fenêtre, largeur de la colonne de gauche, réglages, ordre des notes.
 
+Une **archive** créée par « Archiver » contient un fichier `.json` par note, nommé d'après son titre :
+même format que ci-dessus, donc lisible et éditable à la main. « Restaurer » relit ces archives,
+ou des fichiers `.json` pris un par un ; chaque note importée reçoit un identifiant neuf.
+
 Un fichier illisible est ignoré au chargement et jamais supprimé ; le nombre de fichiers illisibles est
 signalé dans la barre d'état.
 
@@ -71,7 +81,7 @@ signalé dans la barre d'état.
 | `TabStrip.cs` | barre d'onglets dessinée à la main (ajout, renommage en place, glisser-déposer, menu) |
 | `TitleListBox.cs` | liste des titres dessinée à la main (poignée, crayon, corbeille, glisser-déposer) |
 | `Note.cs` / `NoteStore.cs` | modèle note + onglets, persistance JSON |
-| `NotesOverviewForm.cs` | vue « Voir tout » |
+| `NotesOverviewForm.cs` | vue « Voir tout », sélection par appui long, archive et restauration |
 | `LineNumberGutter.cs` / `RichEditLineMetrics.cs` | numéros de lignes alignés sur les métriques réelles de RichEdit |
 | `RichTextFormatting.cs` | styles et police appliqués par messages RichEdit |
 | `Theme.cs` / `ColorButton.cs` / `DarkMenuRenderer.cs` / `DarkToolTip.cs` | palette sombre et contrôles assortis |
