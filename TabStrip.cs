@@ -31,6 +31,7 @@ public sealed class TabStrip : Control
     public event Action? AddRequested;
     public event Action<int, int>? MoveRequested;
     public event Action<int, Point>? ContextRequested;
+    public event Action<int>? RenameRequested;
 
     /// <summary>Indique qu'un onglet est en cours de renommage : le TabStrip ne doit pas voler le focus.</summary>
     public bool IsRenaming { get; set; }
@@ -226,10 +227,13 @@ public sealed class TabStrip : Control
                 g.FillRectangle(accent, r.Left, r.Top, r.Width, thickness);
             }
 
-            var text = new Rectangle(r.Left + _pad, r.Top, Math.Max(0, r.Width - _pad * 2), r.Height);
-            TextRenderer.DrawText(g, _tabs[index].Title, Font, text, fore,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis
-                | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            if (!IsRenaming || index != _selected)
+            {
+                var text = new Rectangle(r.Left + _pad, r.Top, Math.Max(0, r.Width - _pad * 2), r.Height);
+                TextRenderer.DrawText(g, _tabs[index].Title, Font, text, fore,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis
+                    | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            }
         }
 
         DrawPlus(g);
@@ -281,6 +285,7 @@ public sealed class TabStrip : Control
             return;
         }
         int index = IndexFromPoint(e.Location);
+        if (IsRenaming && index == _selected) return;
         if (e.Button == MouseButtons.Left && index >= 0)
         {
             _pressed = index;
@@ -317,9 +322,20 @@ public sealed class TabStrip : Control
         if (_plusRect.Contains(e.Location)) AddRequested?.Invoke();
     }
 
+    protected override void OnMouseDoubleClick(MouseEventArgs e)
+    {
+        base.OnMouseDoubleClick(e);
+        if (e.Button == MouseButtons.Left)
+        {
+            int index = IndexFromPoint(e.Location);
+            if (index >= 0) RenameRequested?.Invoke(index);
+        }
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (IsRenaming) return;
         bool overPlus = _plusRect.Contains(e.Location);
         int index = IndexFromPoint(e.Location);
         if (overPlus != _hoverPlus) { _hoverPlus = overPlus; Invalidate(); }

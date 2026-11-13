@@ -54,9 +54,21 @@ public sealed class Note
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime ModifiedAt { get; set; } = DateTime.Now;
 
+    public Note()
+    {
+        EnsureTabs();
+    }
+
     /// <summary>Onglet affiché : l'onglet mémorisé, sinon le premier.</summary>
     [JsonIgnore]
-    public NoteTab? ActiveTab => Tabs.FirstOrDefault(t => t.Id == ActiveTabId) ?? Tabs.FirstOrDefault();
+    public NoteTab? ActiveTab
+    {
+        get
+        {
+            EnsureTabs();
+            return Tabs.FirstOrDefault(t => t.Id == ActiveTabId) ?? Tabs.FirstOrDefault();
+        }
+    }
 
     /// <summary>Contenu de l'onglet actif : sert au titre automatique et à l'éditeur.</summary>
     [JsonIgnore]

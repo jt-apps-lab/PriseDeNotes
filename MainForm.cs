@@ -650,6 +650,7 @@ public sealed class MainForm : Form
         _tabs.AddRequested += AddTab;
         _tabs.MoveRequested += MoveTab;
         _tabs.ContextRequested += ShowTabMenu;
+        _tabs.RenameRequested += BeginTabRename;
         _tabs.MouseMove += Tabs_MouseMove;
         _tabs.MouseLeave += (_, _) => { _lastTipIndex = -1; _dateTip.HideTip(); };
 
@@ -835,7 +836,9 @@ public sealed class MainForm : Form
     private void SeedFirstNote()
     {
         var n = new Note { Title = "Bienvenue", CreatedAt = DateTime.Now, ModifiedAt = DateTime.Now };
-        n.AddTab("Onglet 1").Content =
+        n.EnsureTabs();
+        n.Tabs[0].Title = "Onglet 1";
+        n.Tabs[0].Content =
             "Prise de notes — thème sombre.\n\n" +
             "· Gauche : la liste des titres. Survolez un titre pour voir les dates.\n" +
             "· Droite : le texte de la note, découpée en onglets.\n" +
@@ -900,6 +903,7 @@ public sealed class MainForm : Form
         Commit();
         _title.Hide();
         _tabTitle.Hide();
+        if (n is not null) n.EnsureTabs();
         _current = n;
         _loading = true;
         _manualTitleChanged = false;
@@ -958,8 +962,8 @@ public sealed class MainForm : Form
     /// <summary>Recopie la barre d'onglets sur la note courante (couleurs comprises).</summary>
     private void RefreshTabs()
     {
-        // Le champ de titre est posé sur un onglet précis : il se ferme quand la barre est recalée.
-        if (_tabTitle.Visible) CommitTabRename();
+        // Pendant le renommage : ne pas interrompre l'édition en cours
+        if (_tabRenaming is not null) return;
         _tabTitle.Hide();
         var n = _current;
         _tabs.Visible = n is not null;
@@ -1123,6 +1127,13 @@ public sealed class MainForm : Form
 
     private void Tabs_MouseMove(object? sender, MouseEventArgs e)
     {
+        if (_tabRenaming is not null)
+        {
+            _lastTipIndex = -1;
+            _dateTip.HideTip();
+            _tip.Hide(_tabs);
+            return;
+        }
         if (_tabs.PlusHitTest(e.Location))
         {
             _lastTipIndex = -1;
@@ -1346,6 +1357,7 @@ public sealed class MainForm : Form
         Commit();
         if (_search.TextLength > 0) _search.Clear();
         var n = new Note { Title = "Nouvelle note", AutoTitle = true };
+        n.EnsureTabs();
         _store.Save(n);
         _all.Insert(0, n);
         RebuildView(n);
