@@ -1,0 +1,66 @@
+using System.Runtime.InteropServices;
+
+namespace PriseDeNotes;
+
+internal static class RichTextFormatting
+{
+    private const uint Face = 0x20000000, Size = 0x80000000;
+    private const uint InSelection = 1, InAll = 4; // SCF_SELECTION, SCF_ALL
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct CharFormat
+    {
+        public uint cbSize, mask, effects;
+        public int height, offset, color;
+        public byte charSet, pitch;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string face;
+    }
+
+    private static CharFormat EmptyFormat() => new()
+    {
+        cbSize = (uint)Marshal.SizeOf<CharFormat>(),
+        face = "",
+    };
+
+    public static bool HasStyle(RichTextBox editor, FontStyle style)
+    {
+        var format = EmptyFormat();
+        SendMessage(editor.Handle, 0x043A, (IntPtr)InSelection, ref format); // EM_GETCHARFORMAT, sélection
+        uint flag = (uint)style;
+        return (format.mask & flag) != 0 && (format.effects & flag) != 0;
+    }
+
+    public static void ToggleStyle(RichTextBox editor, FontStyle style)
+    {
+        bool enabled = HasStyle(editor, style);
+        var format = EmptyFormat();
+        format.mask = (uint)style;
+        format.effects = enabled ? 0 : (uint)style;
+        SendMessage(editor.Handle, 0x0444, (IntPtr)InSelection, ref format); // EM_SETCHARFORMAT, sélection
+    }
+
+    /// <summary>Police et taille du texte sélectionné, ou du point d'insertion. Un champ mélangé ou absent vaut null.</summary>
+    public static (string? family, float? points) GetFont(RichTextBox editor)
+    {
+        var format = EmptyFormat();
+        SendMessage(editor.Handle, 0x043A, (IntPtr)InSelection, ref format); // EM_GETCHARFORMAT, sélection
+        string? family = (format.mask & Face) != 0 && !string.IsNullOrEmpty(format.face) ? format.face : null;
+        float? points = (format.mask & Size) != 0 && format.height > 0 ? format.height / 20f : null;
+        return (family, points);
+    }
+
+    /// <param name="toSelection">true : ne touche que la sélection (ou le point d'insertion), false : toute la note.</param>
+    public static void SetFont(RichTextBox editor, string family, float points, bool toSelection)
+    {
+        var format = EmptyFormat();
+        format.mask = Face | Size;
+        format.face = family;
+        format.height = (int)Math.Round(Math.Clamp(points, 6f, 72f) * 20);
+        // Ne change que la famille et la taille, sans effacer les styles des passages.
+        SendMessage(editor.Handle, 0x0444, (IntPtr)(toSelection ? InSelection : InAll), ref format);
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
+    private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr parameter, ref CharFormat format);
+}
