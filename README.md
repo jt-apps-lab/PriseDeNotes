@@ -7,7 +7,7 @@ Petite application de prise de notes en **thème sombre**, pour Windows, avec mi
 
 [**Télécharger PriseDeNotes**](https://github.com/jt-apps-lab/PriseDeNotes/releases/latest)
 — dernière version pour Windows : télécharge le `.zip`, décompresse-le dans un dossier, puis lance `PriseDeNotes.exe`.
-Nécessite le [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/fr-fr/download/dotnet/8.0) (version *self-contained* disponible sur demande, elle n'en a pas besoin).
+Nécessite le [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/fr-fr/download/dotnet/8.0).
 
 ## Fonctionnalités
 
