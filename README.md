@@ -41,7 +41,6 @@ Nécessite le [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/fr-fr/downlo
 | --- | --- |
 | `Ctrl` + `N` | nouvelle note |
 | `Ctrl` + `S` | enregistrer |
-| `Ctrl` + `D` | supprimer la note (son fichier part dans la corbeille de Windows) |
 | `Ctrl` + `F` | recherche |
 | `Ctrl` + `T` | nouvel onglet |
 

@@ -25,7 +25,8 @@ internal sealed class LineNumberGutter : Panel
     private bool _attached, _refreshing, _fontDirty = true;
     private VisibleLine[] _visibleLines = Array.Empty<VisibleLine>();
     private Viewport? _viewport;
-    private int[]? _lineStarts;
+    // Nombre de paragraphes (lignes numérotées), demandé à RichEdit une fois par modification du texte.
+    private int _paragraphCount = -1;
 
     public LineNumberGutter(RichTextBox body)
     {
@@ -63,31 +64,29 @@ internal sealed class LineNumberGutter : Panel
         _hook.ReleaseHandle();
         _visibleLines = Array.Empty<VisibleLine>();
         _viewport = null;
+        _paragraphCount = -1;
     }
 
     private void BodyViewportChanged(object? sender, EventArgs e) => RefreshLayout(layoutChanged: false);
 
     private void BodyTextChanged(object? sender, EventArgs e)
     {
-        _lineStarts = null;
+        _paragraphCount = -1;
         RefreshNumbers();
     }
 
-    private int[] LogicalLineStarts()
+    /// <summary>
+    /// Nombre de lignes numérotées, lu dans le modèle natif de RichEdit (paragraphe de la fin du texte) :
+    /// le texte n'est jamais recopié côté .NET. Repli sur le nombre de lignes affichées.
+    /// </summary>
+    private int ParagraphCount()
     {
-        if (_lineStarts is not null) return _lineStarts;
-        var starts = new List<int> { 0 };
-        string text = _body.Text;
-        for (int i = 0; i < text.Length; i++)
-        {
-            if (text[i] == '\r')
-            {
-                if (i + 1 < text.Length && text[i + 1] == '\n') i++;
-                starts.Add(i + 1);
-            }
-            else if (text[i] == '\n') starts.Add(i + 1);
-        }
-        return _lineStarts = starts.ToArray();
+        if (_paragraphCount > 0) return _paragraphCount;
+        _lineMetrics ??= RichEditLineMetrics.Create(_body.Handle);
+        int count = 0;
+        if (_lineMetrics is null || !_lineMetrics.TryGetParagraphNumber(Math.Max(0, _body.TextLength), out count))
+            count = DisplayLineCount();
+        return _paragraphCount = Math.Max(1, count);
     }
 
     /// <summary>La police fournie appartient à l'appelant ; seules ses caractéristiques sont conservées.</summary>
@@ -147,7 +146,7 @@ internal sealed class LineNumberGutter : Panel
             var viewport = ReadViewport();
             if (!layoutChanged && !fontChanged && viewport == _viewport) return;
             bool widthChanged = false;
-            int digits = Math.Max(2, LogicalLineStarts().Length.ToString().Length);
+            int digits = Math.Max(2, ParagraphCount().ToString(System.Globalization.CultureInfo.InvariantCulture).Length);
             int width = S(20) + digits * _digitWidth;
             if (width != Width)
             {
@@ -197,19 +196,27 @@ internal sealed class LineNumberGutter : Panel
         _lineMetrics ??= RichEditLineMetrics.Create(_body.Handle);
         if (_lineMetrics is null) return Array.Empty<VisibleLine>();
         int count = DisplayLineCount(), numberHeight = NumberHeight();
-        int[] starts = LogicalLineStarts();
         int first = Math.Clamp((int)SendMessage(_body.Handle, FirstLine, 0, 0), 0, count - 1);
-        for (int line = Math.Max(0, first - 1); line < count; line++)
+        int firstLine = Math.Max(0, first - 1);
+        // Numéro du paragraphe en cours : demandé une fois pour la première ligne visible,
+        // puis incrémenté à chaque début de paragraphe. Coût proportionnel aux seules lignes affichées.
+        int paragraph = 0;
+        for (int line = firstLine; line < count; line++)
         {
             int top = LineTop(line);
             if (top >= ClientSize.Height) break;
             int start = (int)SendMessage(_body.Handle, LineIndex, line, 0);
-            int logicalLine = Array.BinarySearch(starts, start);
-            if (logicalLine < 0) continue; // Suite d'une ligne coupée automatiquement.
+            if (start < 0 || !_lineMetrics.TryStartsParagraph(start, out bool starts)) break;
+            if (line == firstLine)
+            {
+                if (!_lineMetrics.TryGetParagraphNumber(start, out paragraph)) break;
+            }
+            else if (starts) paragraph++;
+            if (!starts) continue; // Suite d'une ligne coupée automatiquement.
             if (!_lineMetrics.TryGetBaseline(start, out int baseline)) continue;
             int numberTop = baseline - _numberAscent;
             if (numberTop < ClientSize.Height && numberTop + numberHeight > 0)
-                lines.Add(new VisibleLine(logicalLine + 1, numberTop, baseline));
+                lines.Add(new VisibleLine(paragraph, numberTop, baseline));
         }
         return lines.ToArray();
     }

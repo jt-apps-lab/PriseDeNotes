@@ -85,8 +85,9 @@ public sealed class MainForm : Form
     // Onglet dont le titre est en cours de saisie dans _tabTitle : la saisie lui est liée,
     // elle ne peut donc pas glisser sur l'onglet d'une autre note.
     private NoteTab? _tabRenaming;
-    // Fenêtre pendant laquelle le champ de titre reprend le focus que le menu contextuel lui reprend.
-    private long _tabRenameGrace;
+    // Renommage demandé par le menu contextuel : lancé seulement une fois le menu fermé,
+    // quand il a rendu le focus à la barre (sinon il le reprendrait au champ de titre).
+    private int _pendingTabRename = -1;
     private readonly StatusStrip _status = new();
     private readonly ToolStripStatusLabel _lblStatus = new();
 
@@ -454,7 +455,13 @@ public sealed class MainForm : Form
         _tabMenu.ShowImageMargin = false;
         _tabMenu.Renderer = new DarkMenuRenderer();
         var add = new ToolStripMenuItem("Nouvel onglet", null, (_, _) => AddTab());
-        var rename = new ToolStripMenuItem("Renommer", null, (_, _) => BeginTabRename(_tabMenuIndex));
+        var rename = new ToolStripMenuItem("Renommer", null, (_, _) =>
+        {
+            _pendingTabRename = _tabMenuIndex;
+            if (!_tabMenu.Visible) StartPendingTabRename();   // menu déjà refermé : on peut lancer
+        });
+        // Le menu rend le focus à la barre en se fermant ; le renommage part après ce message.
+        _tabMenu.Closed += (_, _) => { if (_pendingTabRename >= 0) StartPendingTabRename(); };
         var remove = new ToolStripMenuItem("Supprimer l'onglet", null, (_, _) => RemoveTab(_tabMenuIndex));
         var left = new ToolStripMenuItem("Déplacer à gauche", null, (_, _) => MoveTab(_tabMenuIndex, _tabMenuIndex - 1));
         var right = new ToolStripMenuItem("Déplacer à droite", null, (_, _) => MoveTab(_tabMenuIndex, _tabMenuIndex + 1));
@@ -471,6 +478,14 @@ public sealed class MainForm : Form
             left.Enabled = _tabMenuIndex > 0;
             right.Enabled = _tabMenuIndex < tabs.Count - 1;
         };
+    }
+
+    private void StartPendingTabRename()
+    {
+        int index = _pendingTabRename;
+        _pendingTabRename = -1;
+        if (index < 0) return;
+        BeginInvoke((Action)(() => { if (!IsDisposed) BeginTabRename(index); }));
     }
 
     private void ShowTabMenu(int index, Point screen)
@@ -659,6 +674,9 @@ public sealed class MainForm : Form
         _tabs.MoveRequested += MoveTab;
         _tabs.ContextRequested += ShowTabMenu;
         _tabs.RenameRequested += BeginTabRename;
+        // Un clic dans la barre pendant un renommage l'applique d'abord : la barre reprend ensuite
+        // son comportement normal (sélection, glisser, menu) sur un état propre.
+        _tabs.MouseDown += (_, _) => { if (_tabRenaming is not null) CommitTabRename(); };
         _tabs.MouseMove += Tabs_MouseMove;
         _tabs.MouseLeave += (_, _) => { _lastTipIndex = -1; _dateTip.HideTip(); };
 
@@ -721,25 +739,20 @@ public sealed class MainForm : Form
         // un clic ailleurs applique aussi. Le champ est lié à l'onglet ouvert (_tabRenaming).
         _tabTitle.Leave += (_, _) =>
         {
-            // Le menu contextuel rend le focus à la barre juste après l'ouverture : pendant ce délai,
-            // le champ le reprend au lieu de se fermer et d'appliquer le titre.
-            if (_tabRenaming is not null && Environment.TickCount64 < _tabRenameGrace)
-            {
-                BeginInvoke((Action)(() =>
-                {
-                    if (IsDisposed || _tabRenaming is null) return;
-                    _tabTitle.Focus();
-                    _tabTitle.SelectAll();
-                }));
-                return;
-            }
-            // On ne commit que si le focus va véritablement ailleurs (clic en dehors du champ).
-            // BeginInvoke : on attend la fin du message pour que le nouveau contrôle focussé soit connu.
+            var tab = _tabRenaming;
+            if (tab is null) return;
+            // BeginInvoke : on attend la fin du changement de focus pour savoir où il est allé.
             BeginInvoke((Action)(() =>
             {
-                if (IsDisposed || _tabRenaming is null) return;
-                // Si le champ a retrouvé le focus entre-temps, on ne ferme pas.
-                if (_tabTitle.Focused) return;
+                if (IsDisposed || !ReferenceEquals(_tabRenaming, tab) || _tabTitle.Focused) return;
+                // La barre ne prend jamais le focus pendant un renommage (un clic dessus l'applique d'abord) :
+                // si elle l'a, c'est qu'il lui a été rendu par programme (fermeture d'un menu). Le champ le reprend.
+                if (_tabs.Focused)
+                {
+                    _tabTitle.Focus();
+                    _tabTitle.SelectAll();
+                    return;
+                }
                 CommitTabRename();
             }));
         };
@@ -822,8 +835,8 @@ public sealed class MainForm : Form
         {
             case Keys.Control | Keys.N: NewNote(); return true;
             case Keys.Control | Keys.S: _autosave.Stop(); Commit(); UpdateStatus("Enregistrée"); return true;
-            // Pas de Ctrl+Suppr : dans le texte, ce raccourci efface le mot suivant, il doit rester à l'éditeur.
-            case Keys.Control | Keys.D: DeleteNote(); return true;
+            // Aucun raccourci clavier ne supprime une note : seule la corbeille de la liste le fait,
+            // pour qu'une touche pressée par erreur pendant la saisie ne puisse rien effacer.
             case Keys.Control | Keys.F: _search.Focus(); _search.SelectAll(); return true;
             case Keys.Control | Keys.T: AddTab(); return true;
             default: return base.ProcessCmdKey(ref msg, keyData);
@@ -874,7 +887,7 @@ public sealed class MainForm : Form
             "· Sélectionnez du texte pour ne changer que ce passage ; sans sélection, c'est toute la note.\n\n" +
             "Onglets : le « + » à droite de la barre ajoute un onglet, un clic l'affiche,\n" +
             "le glisser-déposer le déplace, le clic droit le renomme ou le supprime.\n\n" +
-            "Raccourcis : Ctrl+N nouvelle note · Ctrl+S enregistrer · Ctrl+D supprimer (corbeille) · Ctrl+F rechercher ·\n" +
+            "Raccourcis : Ctrl+N nouvelle note · Ctrl+S enregistrer · Ctrl+F rechercher ·\n" +
             "Ctrl+T nouvel onglet.";
         TrySave(n);
         _all.Add(n);
@@ -1132,9 +1145,7 @@ public sealed class MainForm : Form
             Math.Max(S(70), bounds.Width - S(6)), _tabTitle.PreferredHeight);
         _tabTitle.Show();
         _tabTitle.BringToFront();
-        _tabRenameGrace = Environment.TickCount64 + 700;
-        // Le menu contextuel rend le focus au contrôle précédent une fois son clic terminé :
-        // on donne le focus après la fin du message, comme pour le titre de note.
+        // Focus donné après la fin du message en cours (double-clic, clic sur « + »), comme pour le titre de note.
         BeginInvoke((Action)(() =>
         {
             if (IsDisposed || !ReferenceEquals(_tabRenaming, tab)) return;
