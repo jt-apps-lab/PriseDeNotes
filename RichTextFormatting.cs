@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Runtime.InteropServices;
 
 namespace PriseDeNotes;
@@ -5,6 +6,7 @@ namespace PriseDeNotes;
 internal static class RichTextFormatting
 {
     private const uint Face = 0x20000000, Size = 0x80000000;
+    private const uint CFMColor = 0x40000000;
     private const uint InSelection = 1, InAll = 4; // SCF_SELECTION, SCF_ALL
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -58,6 +60,25 @@ internal static class RichTextFormatting
         format.face = family;
         format.height = (int)Math.Round(Math.Clamp(points, 6f, 72f) * 20);
         // Ne change que la famille et la taille, sans effacer les styles des passages.
+        SendMessage(editor.Handle, 0x0444, (IntPtr)(toSelection ? InSelection : InAll), ref format);
+    }
+
+    /// <summary>Couleur du texte sélectionné, ou du point d'insertion. null si mélangée ou couleur par défaut.</summary>
+    public static Color? GetColor(RichTextBox editor)
+    {
+        var format = EmptyFormat();
+        SendMessage(editor.Handle, 0x043A, (IntPtr)InSelection, ref format); // EM_GETCHARFORMAT, sélection
+        if ((format.mask & CFMColor) == 0) return null;
+        if ((format.effects & CFMColor) != 0) return null; // CFE_AUTOCOLOR
+        return ColorTranslator.FromWin32(format.color);
+    }
+
+    /// <param name="toSelection">true : ne touche que la sélection (ou le point d'insertion), false : toute la note.</param>
+    public static void SetColor(RichTextBox editor, Color color, bool toSelection)
+    {
+        var format = EmptyFormat();
+        format.mask = CFMColor;
+        format.color = ColorTranslator.ToWin32(color);
         SendMessage(editor.Handle, 0x0444, (IntPtr)(toSelection ? InSelection : InAll), ref format);
     }
 

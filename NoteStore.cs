@@ -44,17 +44,9 @@ public sealed class NoteStore
                 if (n is null) { failed++; continue; }
                 if (n.Id == Guid.Empty) n.Id = Guid.NewGuid();
 
-                // Migration d'avant les onglets : le texte devient l'onglet 1 de la note.
-                bool migrated = n.Tabs.Count == 0;
-                if (migrated)
-                {
-                    var tab = new NoteTab { Title = "Onglet 1", Content = n.LegacyContent, RichText = n.LegacyRichText };
-                    n.Tabs.Add(tab);
-                    n.ActiveTabId = tab.Id;
-                    n.LegacyContent = "";
-                    n.LegacyRichText = null;
-                }
+                // Migration d'avant les onglets : le texte devient un onglet de la note.
                 n.EnsureTabs();
+                bool migrated = n.MigrateLegacy();
 
                 if (!document.RootElement.TryGetProperty("autoTitle", out _) && n.Title == "Nouvelle note")
                 {
@@ -65,7 +57,7 @@ public sealed class NoteStore
                 // Migration sans changer la date de la note.
                 if (migrated)
                 {
-                    try { File.WriteAllText(file, JsonSerializer.Serialize(n, JsonOpts), Encoding.UTF8); }
+                    try { WriteAtomic(file, JsonSerializer.Serialize(n, JsonOpts)); }
                     catch (IOException) { }
                     catch (UnauthorizedAccessException) { }
                 }
@@ -87,13 +79,44 @@ public sealed class NoteStore
     public void Save(Note note)
     {
         note.ModifiedAt = DateTime.Now;
-        File.WriteAllText(PathFor(note.Id), Serialize(note), Encoding.UTF8);
+        WriteAtomic(PathFor(note.Id), Serialize(note));
     }
 
+    /// <summary>
+    /// Écrit d'abord un fichier temporaire vidé sur le disque, puis le substitue à l'original :
+    /// un plantage ou une coupure de courant laisse l'ancienne version intacte, jamais un fichier tronqué.
+    /// Le temporaire finit en « .tmp » : le chargement (« *.json ») ne le lit pas.
+    /// </summary>
+    private static void WriteAtomic(string path, string text)
+    {
+        var temp = path + ".tmp";
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var writer = new StreamWriter(stream, new UTF8Encoding(true)))
+        {
+            writer.Write(text);
+            writer.Flush();
+            stream.Flush(flushToDisk: true);
+        }
+        try
+        {
+            if (File.Exists(path)) File.Replace(temp, path, null, ignoreMetadataErrors: true);
+            else File.Move(temp, path);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            // Certains volumes (réseau, synchronisés) refusent File.Replace : déplacement avec écrasement.
+            File.Move(temp, path, overwrite: true);
+        }
+    }
+
+    /// <summary>Envoie le fichier de la note à la corbeille de Windows : une suppression se rattrape.</summary>
     public void Delete(Note note)
     {
         var path = PathFor(note.Id);
-        if (File.Exists(path)) File.Delete(path);
+        if (!File.Exists(path)) return;
+        Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(path,
+            Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+            Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
     }
 
     /// <summary>Le JSON d'une note : le fichier sur disque s'il existe (le plus fidèle), sinon une sérialisation.</summary>
@@ -119,16 +142,9 @@ public sealed class NoteStore
             if (n is null) return null;
             if (n.Id == Guid.Empty) n.Id = Guid.NewGuid();
 
-            // Migration d'avant les onglets : le texte devient l'onglet 1 de la note.
-            if (n.Tabs.Count == 0)
-            {
-                var tab = new NoteTab { Title = "Onglet 1", Content = n.LegacyContent, RichText = n.LegacyRichText };
-                n.Tabs.Add(tab);
-                n.ActiveTabId = tab.Id;
-            }
-            n.LegacyContent = "";
-            n.LegacyRichText = null;
+            // Migration d'avant les onglets : le texte devient un onglet de la note.
             n.EnsureTabs();
+            n.MigrateLegacy();
 
             if (!document.RootElement.TryGetProperty("autoTitle", out _) && n.Title == "Nouvelle note")
             {
@@ -206,7 +222,7 @@ public sealed class NoteStore
 
     public void SaveUi(UiState ui)
     {
-        try { File.WriteAllText(UiFile, JsonSerializer.Serialize(ui, JsonOpts), Encoding.UTF8); }
+        try { WriteAtomic(UiFile, JsonSerializer.Serialize(ui, JsonOpts)); }
         catch { /* fenêtre fermée : non critique */ }
     }
 }

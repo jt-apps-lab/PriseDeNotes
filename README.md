@@ -41,7 +41,7 @@ Nécessite le [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/fr-fr/downlo
 | --- | --- |
 | `Ctrl` + `N` | nouvelle note |
 | `Ctrl` + `S` | enregistrer |
-| `Ctrl` + `Suppr` ou `Ctrl` + `D` | supprimer la note |
+| `Ctrl` + `D` | supprimer la note (son fichier part dans la corbeille de Windows) |
 | `Ctrl` + `F` | recherche |
 | `Ctrl` + `T` | nouvel onglet |
 
@@ -69,7 +69,9 @@ même format que ci-dessus, donc lisible et éditable à la main. « Restaurer �
 ou des fichiers `.json` pris un par un ; chaque note importée reçoit un identifiant neuf.
 
 Un fichier illisible est ignoré au chargement et jamais supprimé ; le nombre de fichiers illisibles est
-signalé dans la barre d'état.
+signalé dans la barre d'état. Chaque enregistrement passe par un fichier temporaire `.tmp` remplacé
+d'un coup : une coupure pendant l'écriture laisse la version précédente intacte.
+Une seule fenêtre de l'application peut être ouverte à la fois.
 
 ## Architecture
 

@@ -107,6 +107,39 @@ public sealed class Note
 
     public int IndexOfTab(Guid id) => Tabs.FindIndex(t => t.Id == id);
 
+    /// <summary>
+    /// Range le texte d'une note d'avant les onglets (champs « content » / « richText ») dans un onglet.
+    /// Le constructeur crée déjà un onglet vide : on ne peut donc pas se fier à Tabs.Count == 0.
+    /// Si les onglets sont tous vides, l'ancien texte va dans le premier ; sinon il part dans un onglet
+    /// ajouté, pour ne jamais rien écraser. Renvoie true si la note a changé.
+    /// </summary>
+    public bool MigrateLegacy()
+    {
+        bool hasText = !string.IsNullOrEmpty(LegacyContent);
+        bool hasRich = !string.IsNullOrEmpty(LegacyRichText);
+        if (!hasText && !hasRich) return false;
+
+        EnsureTabs();
+        bool tabsEmpty = Tabs.All(t => string.IsNullOrEmpty(t.Content) && string.IsNullOrEmpty(t.RichText));
+        NoteTab target;
+        if (tabsEmpty)
+        {
+            target = Tabs[0];
+            Tabs.RemoveRange(1, Tabs.Count - 1);
+        }
+        else
+        {
+            target = new NoteTab { Title = "Texte récupéré" };
+            Tabs.Add(target);
+        }
+        target.Content = LegacyContent ?? "";
+        target.RichText = hasRich ? LegacyRichText : null;
+        ActiveTabId = target.Id;
+        LegacyContent = "";
+        LegacyRichText = null;
+        return true;
+    }
+
     /// <summary>Répare un fichier édité à la main : onglets manquants, identifiants vides ou en double.</summary>
     public void EnsureTabs()
     {

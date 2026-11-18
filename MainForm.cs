@@ -94,6 +94,7 @@ public sealed class MainForm : Form
     // Police de base de la note : sert au texte sans mise en forme, et aux listes du haut.
     private string _noteFamily = "Segoe UI";
     private float _noteSize = 11f;
+    private Color _noteFore = Theme.Text;
 
     public MainForm(NoteStore store)
     {
@@ -768,7 +769,7 @@ public sealed class MainForm : Form
         _tip.SetToolTip(_btnNew, "Nouvelle note  (Ctrl+N)");
         _tip.SetToolTip(_btnViewAll, "Voir toutes les notes");
         _tip.SetToolTip(_btnBack, "Couleur de fond de la note");
-        _tip.SetToolTip(_btnFore, "Couleur de la police de la note");
+        _tip.SetToolTip(_btnFore, "Couleur de police : la sélection, sinon toute la note");
         _tip.SetToolTip(_fontFamily, "Police : la sélection, sinon toute la note");
         _tip.SetToolTip(_fontSize, "Taille : la sélection, sinon toute la note");
         _tip.SetToolTip(_btnSettings, "Paramètres");
@@ -795,7 +796,7 @@ public sealed class MainForm : Form
         {
             case Keys.Control | Keys.N: NewNote(); return true;
             case Keys.Control | Keys.S: _autosave.Stop(); Commit(); UpdateStatus("Enregistrée"); return true;
-            case Keys.Control | Keys.Delete:
+            // Pas de Ctrl+Suppr : dans le texte, ce raccourci efface le mot suivant, il doit rester à l'éditeur.
             case Keys.Control | Keys.D: DeleteNote(); return true;
             case Keys.Control | Keys.F: _search.Focus(); _search.SelectAll(); return true;
             case Keys.Control | Keys.T: AddTab(); return true;
@@ -847,7 +848,7 @@ public sealed class MainForm : Form
             "· Sélectionnez du texte pour ne changer que ce passage ; sans sélection, c'est toute la note.\n\n" +
             "Onglets : le « + » à droite de la barre ajoute un onglet, un clic l'affiche,\n" +
             "le glisser-déposer le déplace, le clic droit le renomme ou le supprime.\n\n" +
-            "Raccourcis : Ctrl+N nouvelle note · Ctrl+S enregistrer · Ctrl+Suppr supprimer · Ctrl+F rechercher ·\n" +
+            "Raccourcis : Ctrl+N nouvelle note · Ctrl+S enregistrer · Ctrl+D supprimer (corbeille) · Ctrl+F rechercher ·\n" +
             "Ctrl+T nouvel onglet.";
         _store.Save(n);
         _all.Add(n);
@@ -937,11 +938,12 @@ public sealed class MainForm : Form
 
         _noteFamily = _fonts.Families.FirstOrDefault(f => f.Name == n.FontFamily)?.Name ?? "Segoe UI";
         _noteSize = Math.Clamp(n.FontSize, 6f, 72f);
+        _noteFore = ColorExt.ToColor(n.ForeColor, Theme.Text);
         ShowFontSelectors();
         ApplyGutterFont();
 
         _btnBack.SelectedColor = ColorExt.ToColor(n.BackColor, Theme.Window);
-        _btnFore.SelectedColor = ColorExt.ToColor(n.ForeColor, Theme.Text);
+        _btnFore.SelectedColor = _noteFore;
 
         _loading = false;
         RefreshTabs();
@@ -970,7 +972,7 @@ public sealed class MainForm : Form
         _tabs.Enabled = n is not null;
         _tabs.SetActiveColors(
             ColorExt.ToColor(n?.BackColor ?? Theme.DefaultNoteBack, Theme.Window),
-            ColorExt.ToColor(n?.ForeColor ?? Theme.DefaultNoteFore, Theme.Text));
+            _noteFore);
         _tabs.SetTabs(n?.Tabs, n is null ? -1 : Math.Max(0, n.IndexOfTab(n.ActiveTabId)));
     }
 
@@ -1219,6 +1221,12 @@ public sealed class MainForm : Form
                 AddItem(_fontSize, NearestSize((float)points).ToString("0.#", CultureInfo.InvariantCulture));
         }
         finally { _syncingFont = false; }
+
+        var color = RichTextFormatting.GetColor(_body);
+        if (color.HasValue)
+            _btnFore.SelectedColor = color.Value;
+        else if (_body.SelectionLength == 0)
+            _btnFore.SelectedColor = _noteFore;
     }
 
     /// <summary>
@@ -1337,6 +1345,8 @@ public sealed class MainForm : Form
     private void PickColor(ColorButton swatch, string caption)
     {
         if (_current is null) return;
+        int selStart = _body.SelectionStart;
+        int selLength = _body.SelectionLength;
         using var dlg = new ColorDialog
         {
             FullOpen = true,
@@ -1344,11 +1354,36 @@ public sealed class MainForm : Form
         };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
         swatch.SelectedColor = dlg.Color;
-        _body.BackColor = swatch == _btnBack ? dlg.Color : _body.BackColor;
-        _body.ForeColor = swatch == _btnFore ? dlg.Color : _body.ForeColor;
-        ApplyNoteBackground();
-        if (swatch == _btnFore) _richTextDirty = true;
+        if (swatch == _btnBack)
+        {
+            _body.BackColor = dlg.Color;
+            ApplyNoteBackground();
+            RefreshTabs();
+        }
+        else if (swatch == _btnFore)
+        {
+            bool toSelection = selLength > 0;
+            if (toSelection)
+            {
+                _body.Select(selStart, selLength);
+                RichTextFormatting.SetColor(_body, dlg.Color, toSelection: true);
+                _richTextDirty = true;
+            }
+            else
+            {
+                _noteFore = dlg.Color;
+                _body.ForeColor = dlg.Color;
+                RichTextFormatting.SetColor(_body, dlg.Color, toSelection: false);
+                _richTextDirty = true;
+                RefreshTabs();
+            }
+        }
         Commit();
+        if (swatch == _btnFore && selLength > 0)
+        {
+            _body.Select(selStart, selLength);
+        }
+        _body.Focus();
         UpdateStatus(caption.Split(' ')[0] + " appliquée");
     }
 
@@ -1429,7 +1464,7 @@ public sealed class MainForm : Form
         if (_confirmDelete.Checked)
         {
             var answer = MessageBox.Show(this,
-                $"Supprimer définitivement la note « {n.Title} » ?",
+                $"Supprimer la note « {n.Title} » ?\n\nSon fichier part dans la corbeille de Windows.",
                 "Suppression", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
             if (answer != DialogResult.Yes) return;
         }
@@ -1440,12 +1475,19 @@ public sealed class MainForm : Form
     private void RemoveNote(Note n)
     {
         _autosave.Stop();
-        _store.Delete(n);
+        try { _store.Delete(n); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or OperationCanceledException)
+        {
+            // Fichier verrouillé ou suppression annulée : la note reste en place, rien n'est perdu.
+            MessageBox.Show(this, "La note n'a pas pu être supprimée :\n" + e.Message,
+                "Suppression", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         _current = null;
         _all.Remove(n);
         int at = _view.IndexOf(n);
-        _view.RemoveAt(at);
-        var next = _view.Count == 0 ? null : _view[Math.Min(at, _view.Count - 1)];
+        if (at >= 0) _view.RemoveAt(at);
+        var next = _view.Count == 0 ? null : _view[Math.Clamp(at, 0, _view.Count - 1)];
         RebuildView(next);
         SaveUiState();
     }
@@ -1466,7 +1508,7 @@ public sealed class MainForm : Form
         var family = _noteFamily;
         var size = _noteSize;
         var back = _btnBack.SelectedColor.ToHex();
-        var fore = _btnFore.SelectedColor.ToHex();
+        var fore = _noteFore.ToHex();
 
         if (n.Title == title && n.AutoTitle == autoTitle && tab.Content == content && tab.RichText == richText &&
             n.FontFamily == family && n.FontSize == size && n.BackColor == back && n.ForeColor == fore)
