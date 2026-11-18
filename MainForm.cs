@@ -15,7 +15,13 @@ public sealed class MainForm : Form
     private readonly NoteStore _store;
     private readonly List<Note> _all = new();
     private readonly List<Note> _view = new();
-    private readonly InstalledFontCollection _fonts = new();
+    // Noms des polices installées, lus une seule fois : chaque lecture de InstalledFontCollection.Families
+    // recrée des centaines d'objets FontFamily GDI+.
+    private readonly string[] _fontNames = LoadFontNames();
+    private readonly HashSet<string> _fontSet;
+    // Notes dont le dernier enregistrement a échoué (fichier verrouillé, disque plein…) : réessayées ensuite.
+    private readonly HashSet<Note> _unsaved = new();
+    private string? _saveError;
     private readonly ToolTip _tip = new();
     private readonly DarkToolTip _dateTip = new();
     private readonly System.Windows.Forms.Timer _autosave = new() { Interval = 1200 };
@@ -99,6 +105,7 @@ public sealed class MainForm : Form
     public MainForm(NoteStore store)
     {
         _store = store;
+        _fontSet = new HashSet<string>(_fontNames, StringComparer.Ordinal);
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(DeviceDpi, DeviceDpi);
 
@@ -254,7 +261,7 @@ public sealed class MainForm : Form
 
         _fontFamily.DropDownStyle = ComboBoxStyle.DropDownList;
         _fontSize.DropDownStyle = ComboBoxStyle.DropDownList;
-        foreach (var f in _fonts.Families) _fontFamily.Items.Add(f.Name);
+        foreach (var name in _fontNames) _fontFamily.Items.Add(name);
         _fontFamily.SelectedItem = "Segoe UI";
         foreach (var s in Sizes) _fontSize.Items.Add(s.ToString("0.#", CultureInfo.InvariantCulture));
         _fontSize.SelectedItem = "11";
@@ -776,16 +783,35 @@ public sealed class MainForm : Form
         _fontFamily.SelectedIndexChanged += (_, _) => { if (_loading || _syncingFont) return; ApplyFont(); MarkDirty(); };
         _fontSize.SelectedIndexChanged += (_, _) => { if (_loading || _syncingFont) return; ApplyFont(); MarkDirty(); };
 
-        _autosave.Tick += (_, _) => { _autosave.Stop(); Commit(); };
+        _autosave.Tick += (_, _) =>
+        {
+            _autosave.Stop();
+            Commit();
+            if (_unsaved.Count > 0)
+            {
+                RetryUnsaved();
+                UpdateStatus();
+            }
+        };
 
         Deactivate += (_, _) => { _dateTip.HideTip(); CloseTabRename(); };
         Move += (_, _) => { _dateTip.HideTip(); CloseTabRename(); };
         Resize += (_, _) => { _dateTip.HideTip(); CloseTabRename(); };
 
-        FormClosing += (_, _) =>
+        FormClosing += (_, e) =>
         {
             Commit();
+            RetryUnsaved();
             _dateTip.HideTip();
+            if (_unsaved.Count > 0)
+            {
+                var answer = MessageBox.Show(this,
+                    $"{_unsaved.Count} note(s) n'ont pas pu être enregistrées :\n{_saveError}\n\n"
+                    + "Fermer quand même ? Les modifications non enregistrées seront perdues.",
+                    "Enregistrement impossible", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2);
+                if (answer != DialogResult.Yes) { e.Cancel = true; return; }
+            }
             SaveUiState();
         };
     }
@@ -850,7 +876,7 @@ public sealed class MainForm : Form
             "le glisser-déposer le déplace, le clic droit le renomme ou le supprime.\n\n" +
             "Raccourcis : Ctrl+N nouvelle note · Ctrl+S enregistrer · Ctrl+D supprimer (corbeille) · Ctrl+F rechercher ·\n" +
             "Ctrl+T nouvel onglet.";
-        _store.Save(n);
+        TrySave(n);
         _all.Add(n);
     }
 
@@ -936,7 +962,7 @@ public sealed class MainForm : Form
         ApplyNoteBackground();
         SetBodyFont(FontFor(n));
 
-        _noteFamily = _fonts.Families.FirstOrDefault(f => f.Name == n.FontFamily)?.Name ?? "Segoe UI";
+        _noteFamily = AvailableFont(n.FontFamily);
         _noteSize = Math.Clamp(n.FontSize, 6f, 72f);
         _noteFore = ColorExt.ToColor(n.ForeColor, Theme.Text);
         ShowFontSelectors();
@@ -951,12 +977,23 @@ public sealed class MainForm : Form
         UpdateStatus();
     }
 
-    private Font FontFor(Note n)
+    private Font FontFor(Note n) =>
+        new(AvailableFont(n.FontFamily), Math.Clamp(n.FontSize, 6f, 72f), FontStyle.Regular);
+
+    /// <summary>La police demandée si elle est installée, sinon Segoe UI, sinon la première police du système.</summary>
+    private string AvailableFont(string? family)
     {
-        var family = _fonts.Families.FirstOrDefault(f => f.Name == n.FontFamily)
-                     ?? _fonts.Families.FirstOrDefault(f => f.Name == "Segoe UI")
-                     ?? _fonts.Families[0];
-        return new Font(family, Math.Clamp(n.FontSize, 6f, 72f), FontStyle.Regular);
+        if (family is not null && _fontSet.Contains(family)) return family;
+        if (_fontSet.Contains("Segoe UI") || _fontNames.Length == 0) return "Segoe UI";
+        return _fontNames[0];
+    }
+
+    private static string[] LoadFontNames()
+    {
+        using var collection = new InstalledFontCollection();
+        var families = collection.Families;
+        try { return families.Select(f => f.Name).ToArray(); }
+        finally { foreach (var f in families) f.Dispose(); }
     }
 
     // ─────────────────────────── Onglets ───────────────────────────
@@ -1016,7 +1053,8 @@ public sealed class MainForm : Form
         Commit();
         n.ActiveTabId = n.Tabs[index].Id;
         LoadTabContent();
-        _store.Save(n);
+        // Afficher un autre onglet n'est pas une modification : la date de la note ne bouge pas.
+        TrySave(n, touch: false);
         UpdateStatus($"Onglet « {n.Tabs[index].Title} »");
     }
 
@@ -1026,7 +1064,7 @@ public sealed class MainForm : Form
         if (n is null) return;
         Commit();
         var tab = n.AddTab();
-        _store.Save(n);
+        TrySave(n);
         LoadTabContent();
         RefreshTabs();
         BeginTabRename(n.IndexOfTab(tab.Id));
@@ -1051,7 +1089,7 @@ public sealed class MainForm : Form
         _autosave.Stop();
         n.Tabs.RemoveAt(index);
         if (n.IndexOfTab(n.ActiveTabId) < 0) n.ActiveTabId = n.Tabs[Math.Min(index, n.Tabs.Count - 1)].Id;
-        _store.Save(n);
+        TrySave(n);
         LoadTabContent();
         RefreshTabs();
         UpdateStatus("Onglet supprimé");
@@ -1063,7 +1101,7 @@ public sealed class MainForm : Form
         if (n is null) return;
         Commit();
         n.MoveTab(from, target);
-        _store.Save(n);
+        TrySave(n);
         RefreshTabs();
         UpdateStatus("Onglet déplacé");
     }
@@ -1121,7 +1159,7 @@ public sealed class MainForm : Form
         if (title.Length > 0 && title != tab.Title)
         {
             tab.Title = title;
-            _store.Save(owner);
+            TrySave(owner);
             UpdateStatus($"Onglet « {title} »");
         }
         RefreshTabs();
@@ -1175,7 +1213,7 @@ public sealed class MainForm : Form
         if (_fontSize.SelectedItem is not null &&
             float.TryParse(_fontSize.SelectedItem.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var s))
             size = s;
-        var available = _fonts.Families.FirstOrDefault(f => f.Name == family)?.Name ?? "Segoe UI";
+        var available = AvailableFont(family);
         size = Math.Clamp(size, 6f, 72f);
 
         bool toSelection = _body.SelectionLength > 0;
@@ -1241,9 +1279,22 @@ public sealed class MainForm : Form
         return Math.Abs(points - best) <= 0.75f ? best : points;
     }
 
+    /// <summary>
+    /// Sélectionne <paramref name="value"/>. Une valeur hors liste (police absente, taille collée en RTF)
+    /// est ajoutée en un seul exemplaire, retiré dès qu'on sélectionne autre chose : la liste ne grossit plus.
+    /// </summary>
     private static void AddItem(ComboBox combo, string value)
     {
-        if (!combo.Items.Contains(value)) combo.Items.Add(value);
+        if (combo.Tag is string extra && extra != value)
+        {
+            combo.Items.Remove(extra);
+            combo.Tag = null;
+        }
+        if (!combo.Items.Contains(value))
+        {
+            combo.Items.Add(value);
+            combo.Tag = value;
+        }
         combo.SelectedItem = value;
     }
 
@@ -1393,7 +1444,7 @@ public sealed class MainForm : Form
         if (_search.TextLength > 0) _search.Clear();
         var n = new Note { Title = "Nouvelle note", AutoTitle = true };
         n.EnsureTabs();
-        _store.Save(n);
+        TrySave(n);
         _all.Insert(0, n);
         RebuildView(n);
         SaveUiState();
@@ -1406,13 +1457,14 @@ public sealed class MainForm : Form
         _dateTip.HideTip();
         using var overview = new NotesOverviewForm(_all, _store) { Icon = Icon };
         var result = overview.ShowDialog(this);
-        if (overview.Imported)
+        if (overview.ImportedNotes.Count > 0)
         {
-            Guid? opened = _current?.Id;
-            Commit();
-            _current = null;          // les instances en mémoire sont périmées après un import
-            ReloadNotes();
-            RebuildView(_all.FirstOrDefault(n => n.Id == opened) ?? _all.FirstOrDefault());
+            // Les notes restaurées sont neuves (identifiants neufs) : on les ajoute en tête de liste,
+            // sans relire le disque, ce qui garderait les notes en mémoire et leurs saisies non enregistrées.
+            _all.InsertRange(0, overview.ImportedNotes);
+            if (_search.TextLength > 0) _search.Clear();
+            RebuildView(_current ?? _all.FirstOrDefault());
+            SaveUiState();
             UpdateStatus("Notes restaurées");
             _body.Focus();
             return;
@@ -1426,7 +1478,8 @@ public sealed class MainForm : Form
     private void UpdateAutomaticTitle()
     {
         if (_current is null || !_current.AutoTitle || _title.Visible) return;
-        var title = Note.TitleFromContent(_body.Text);
+        // Seul le début du texte compte pour le titre : inutile de copier toute la note à chaque frappe.
+        var title = Note.TitleFromContent(RichTextFormatting.GetTextStart(_body, 4096));
         _title.Text = title;
         if (_current.Title == title) return;
         _current.Title = title;
@@ -1515,6 +1568,7 @@ public sealed class MainForm : Form
         {
             _richTextDirty = false;
             _manualTitleChanged = false;
+            if (_unsaved.Contains(n)) TrySave(n, touch: false);
             return;
         }
 
@@ -1527,13 +1581,49 @@ public sealed class MainForm : Form
         n.BackColor = back;
         n.ForeColor = fore;
 
-        _store.Save(n);
+        // Même en cas d'échec, la note en mémoire porte la saisie : TrySave la réenregistrera.
+        bool saved = TrySave(n);
         _richTextDirty = false;
         _manualTitleChanged = false;
 
         int i = _view.IndexOf(n);
         if (i >= 0) _list.Invalidate(_list.GetItemRectangle(i));
-        UpdateStatus("Enregistrée");
+        UpdateStatus(saved ? "Enregistrée" : null);
+    }
+
+    /// <summary>
+    /// Enregistre sans jamais lever d'exception : un échec (fichier verrouillé, disque plein…) est signalé
+    /// dans la barre d'état, la note est gardée en mémoire et réenregistrée au prochain passage.
+    /// </summary>
+    private bool TrySave(Note n, bool touch = true)
+    {
+        try
+        {
+            _store.Save(n, touch);
+            _unsaved.Remove(n);
+            if (_unsaved.Count == 0) _saveError = null;
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _unsaved.Add(n);
+            _saveError = e.Message;
+            UpdateStatus();
+            _autosave.Stop();
+            _autosave.Start();   // nouvel essai au prochain tic
+            return false;
+        }
+    }
+
+    /// <summary>Réessaie les notes restées non enregistrées (sauf supprimées entre-temps).</summary>
+    private void RetryUnsaved()
+    {
+        foreach (var n in _unsaved.ToList())
+        {
+            if (!_all.Contains(n)) { _unsaved.Remove(n); continue; }
+            TrySave(n, touch: false);
+        }
+        if (_unsaved.Count == 0) _saveError = null;
     }
 
     private void MarkDirty()
@@ -1555,6 +1645,8 @@ public sealed class MainForm : Form
             parts.Add($"{_body.Text.Length} caractères");
             parts.Add($"modifiée {_current.ModifiedAt:HH:mm:ss}");
         }
+        if (_saveError is not null)
+            parts.Add($"⚠ Échec d'enregistrement de {_unsaved.Count} note(s), nouvel essai en cours : {_saveError}");
         if (_store.LastLoadFailures > 0)
             parts.Add($"⚠ {_store.LastLoadFailures} fichier(s) de note illisible(s) dans " + _store.Folder);
         if (!string.IsNullOrEmpty(flash)) parts.Add(flash);
@@ -1575,7 +1667,6 @@ public sealed class MainForm : Form
             _autosave.Dispose();
             _tip.Dispose();
             _dateTip.Dispose();
-            _fonts.Dispose();
             _settingsMenu.Dispose();
             _bodyMenu.Dispose();
             _tabMenu.Dispose();
@@ -1667,7 +1758,8 @@ public sealed class MainForm : Form
         {
             if (ui.Width >= MinimumSize.Width && ui.Height >= MinimumSize.Height)
                 Size = new Size(ui.Width, ui.Height);
-            if (ui.Left >= 0 && ui.Top >= 0)
+            // Une position négative est valable (écran secondaire placé à gauche ou au-dessus).
+            if (ui.Left is int savedLeft && ui.Top is int savedTop)
             {
                 // bornage : une fenêtre restaurée hors de l'écran doit rester atteignable
                 int vl = int.MaxValue, vt = int.MaxValue, vr = int.MinValue, vb = int.MinValue;
@@ -1678,11 +1770,12 @@ public sealed class MainForm : Form
                     vr = Math.Max(vr, s.Bounds.Right);
                     vb = Math.Max(vb, s.Bounds.Bottom);
                 }
-                int left = Math.Clamp(ui.Left, vl, Math.Max(vl, vr - ui.Width));
-                int top = Math.Clamp(ui.Top, vt, Math.Max(vt, vb - ui.Height));
+                int left = Math.Clamp(savedLeft, vl, Math.Max(vl, vr - Width));
+                int top = Math.Clamp(savedTop, vt, Math.Max(vt, vb - Height));
                 StartPosition = FormStartPosition.Manual;
                 Location = new Point(left, top);
             }
+            if (ui.Maximized) WindowState = FormWindowState.Maximized;
             if (ui.Splitter > 0)
             {
                 try { _split.SplitterDistance = ui.Splitter; } catch { }
@@ -1691,16 +1784,22 @@ public sealed class MainForm : Form
         catch { /* écran débranché depuis : on garde la taille par défaut */ }
     }
 
-    private void SaveUiState() => _store.SaveUi(new UiState
+    private void SaveUiState()
     {
-        Width = Width,
-        Height = Height,
-        Left = Location.X,
-        Top = Location.Y,
-        Splitter = SafeSplitter(),
-        ConfirmBeforeDelete = _confirmDelete.Checked,
-        ShowLineNumbers = _lineNumbers.Checked,
-        WordWrap = _wordWrap.Checked,
-        NoteOrder = _all.Select(n => n.Id).ToList(),
-    });
+        // Fenêtre agrandie ou réduite : on garde sa taille « normale », pas celle de l'écran ni -32000.
+        var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        _store.SaveUi(new UiState
+        {
+            Width = bounds.Width,
+            Height = bounds.Height,
+            Left = bounds.X,
+            Top = bounds.Y,
+            Maximized = WindowState == FormWindowState.Maximized,
+            Splitter = SafeSplitter(),
+            ConfirmBeforeDelete = _confirmDelete.Checked,
+            ShowLineNumbers = _lineNumbers.Checked,
+            WordWrap = _wordWrap.Checked,
+            NoteOrder = _all.Select(n => n.Id).ToList(),
+        });
+    }
 }

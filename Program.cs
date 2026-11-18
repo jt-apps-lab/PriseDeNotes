@@ -12,6 +12,14 @@ internal static class Program
     private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+        // Dernier filet : une erreur imprévue est consignée dans erreurs.log et signalée simplement,
+        // au lieu de la boîte technique de WinForms. Les notes déjà saisies restent en mémoire.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => ReportError(e.Exception, canContinue: true);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception ex) ReportError(ex, canContinue: false);
+        };
         var store = new NoteStore();
 
         if (args.Contains("--diag"))
@@ -39,6 +47,24 @@ internal static class Program
         }
 
         Application.Run(new MainForm(store));
+    }
+
+    private static void ReportError(Exception error, bool canContinue)
+    {
+        string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "PriseDeNotes", "erreurs.log");
+        try { File.AppendAllText(log, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {error}{Environment.NewLine}{Environment.NewLine}"); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        try
+        {
+            MessageBox.Show(
+                "Une erreur inattendue s'est produite :\n" + error.Message + "\n\n"
+                + (canContinue ? "L'application continue. " : "L'application va se fermer. ")
+                + "Le détail est enregistré dans :\n" + log,
+                "Prise de notes", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        catch { /* affichage impossible : le journal suffit */ }
     }
 
     private static void ActivateRunningInstance()

@@ -40,12 +40,17 @@ public sealed class NotesOverviewForm : Form
     private Point _pressedPoint;
     private bool _longPressFired;
     private bool _selecting;
-    private string _importFolder;
+
+    /// <summary>
+    /// Dossier proposé par Archiver et Restaurer : Documents au départ (le dossier de l'exe est souvent
+    /// en lecture seule), puis le dernier dossier utilisé pendant la session.
+    /// </summary>
+    private static string s_lastFolder = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 
     public Note? SelectedNote { get; private set; }
 
-    /// <summary>Des notes ont été restaurées : la fenêtre principale doit recharger sa liste.</summary>
-    public bool Imported { get; private set; }
+    /// <summary>Notes créées par « Restaurer » : la fenêtre principale les ajoute à sa liste.</summary>
+    public IReadOnlyList<Note> ImportedNotes { get; private set; } = Array.Empty<Note>();
 
     private int S(int pixels) => (int)Math.Round(pixels * DeviceDpi / 96f);
 
@@ -53,7 +58,6 @@ public sealed class NotesOverviewForm : Form
     {
         _notes = notes;
         _store = store;
-        _importFolder = AppContext.BaseDirectory;
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(DeviceDpi, DeviceDpi);
         Text = "Toutes les notes";
@@ -433,21 +437,29 @@ public sealed class NotesOverviewForm : Form
             Filter = "Archive ZIP (*.zip)|*.zip",
             DefaultExt = "zip",
             FileName = DateTime.Now.ToString("'Archive'yyyy-MM-dd HH'h'mm", CultureInfo.InvariantCulture) + ".zip",
-            InitialDirectory = AppContext.BaseDirectory,
+            InitialDirectory = s_lastFolder,
             AddToRecent = false,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        s_lastFolder = Path.GetDirectoryName(dialog.FileName) ?? s_lastFolder;
 
+        // Le zip est écrit à part puis mis en place d'un coup : un échec ne laisse ni archive à moitié
+        // écrite, ni ancienne archive détruite ; un fichier existant est remplacé comme la boîte l'a proposé.
+        var temp = dialog.FileName + ".tmp";
         try
         {
-            using var archive = ZipFile.Open(dialog.FileName, ZipArchiveMode.Create);
-            var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var note in chosen)
+            using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var archive = new ZipArchive(stream, ZipArchiveMode.Create))
             {
-                using var entry = archive.CreateEntry(EntryName(used, note)).Open();
-                using var writer = new StreamWriter(entry, new UTF8Encoding(false));
-                writer.Write(_store.JsonFor(note));
+                var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var note in chosen)
+                {
+                    using var entry = archive.CreateEntry(EntryName(used, note)).Open();
+                    using var writer = new StreamWriter(entry, new UTF8Encoding(false));
+                    writer.Write(_store.JsonFor(note));
+                }
             }
+            File.Move(temp, dialog.FileName, overwrite: true);
             int count = chosen.Count;
             ExitSelectionMode();
             MessageBox.Show(this,
@@ -457,6 +469,7 @@ public sealed class NotesOverviewForm : Form
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException
                                   or NotSupportedException or ArgumentException)
         {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             MessageBox.Show(this, "Impossible de créer l'archive :\n" + e.Message,
                 "Archiver", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
@@ -468,30 +481,37 @@ public sealed class NotesOverviewForm : Form
         {
             Title = "Restaurer des notes",
             Filter = "Notes Prise de notes (*.zip; *.json)|*.zip;*.json|Archives ZIP (*.zip)|*.zip|Notes (*.json)|*.json",
-            InitialDirectory = _importFolder,
+            InitialDirectory = s_lastFolder,
             Multiselect = true,
             AddToRecent = false,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
         var files = dialog.FileNames;
-        if (files.Length > 0) _importFolder = Path.GetDirectoryName(files[0]) ?? _importFolder;
-        var result = _store.Import(files);
+        if (files.Length > 0) s_lastFolder = Path.GetDirectoryName(files[0]) ?? s_lastFolder;
+        var result = _store.Import(files, _notes);
         ExitSelectionMode();
 
+        string duplicates = result.Duplicates > 0
+            ? $"\n{result.Duplicates} note(s) déjà présente(s), non réimportée(s)." : "";
         if (result.Notes.Count == 0)
         {
+            bool onlyDuplicates = result.Duplicates > 0 && result.Skipped == 0;
             MessageBox.Show(this,
-                "Aucune note n'a pu être lue." + (result.Skipped > 0 ? $"\n{result.Skipped} élément(s) ignoré(s)." : "")
-                + "\nL'archive doit contenir les fichiers .json écrits par « Archiver ».",
-                "Restaurer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                onlyDuplicates
+                    ? "Toutes ces notes sont déjà présentes : rien à restaurer." + duplicates
+                    : "Aucune note n'a pu être lue." + duplicates
+                      + (result.Skipped > 0 ? $"\n{result.Skipped} élément(s) ignoré(s)." : "")
+                      + "\nL'archive doit contenir les fichiers .json écrits par « Archiver ».",
+                "Restaurer", MessageBoxButtons.OK, onlyDuplicates ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             return;
         }
 
-        Imported = true;
+        ImportedNotes = result.Notes;
         string detail = result.Skipped > 0 ? $"  ·  {result.Skipped} élément(s) ignoré(s)" : "";
         MessageBox.Show(this,
             $"{result.Notes.Count} note{(result.Notes.Count == 1 ? "" : "s")} restaurée{(result.Notes.Count == 1 ? "" : "s")}{detail}."
+            + duplicates
             + "\nElles apparaissent dans la liste des notes.",
             "Restaurer", MessageBoxButtons.OK, MessageBoxIcon.Information);
         Close();

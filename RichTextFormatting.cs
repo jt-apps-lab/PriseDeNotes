@@ -82,6 +82,31 @@ internal static class RichTextFormatting
         SendMessage(editor.Handle, 0x0444, (IntPtr)(toSelection ? InSelection : InAll), ref format);
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TextRange
+    {
+        public int cpMin, cpMax;
+        public IntPtr text;
+    }
+
+    /// <summary>Les <paramref name="maxChars"/> premiers caractères du texte, sans copier tout le contenu (EM_GETTEXTRANGE).</summary>
+    public static string GetTextStart(RichTextBox editor, int maxChars)
+    {
+        int length = Math.Min(editor.TextLength, maxChars);
+        if (length <= 0) return "";
+        IntPtr buffer = Marshal.AllocHGlobal((length + 1) * sizeof(char));
+        try
+        {
+            var range = new TextRange { cpMin = 0, cpMax = length, text = buffer };
+            int copied = (int)SendMessage(editor.Handle, 0x044B, IntPtr.Zero, ref range); // EM_GETTEXTRANGE
+            return copied > 0 ? Marshal.PtrToStringUni(buffer, Math.Min(copied, length)) : "";
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr parameter, ref CharFormat format);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
+    private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr parameter, ref TextRange range);
 }

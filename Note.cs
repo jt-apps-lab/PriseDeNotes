@@ -42,9 +42,11 @@ public sealed class Note
     [JsonConverter(typeof(LenientGuidConverter))]
     public Guid ActiveTabId { get; set; }
 
-    // Note d'avant les onglets : relu à la migration, vidé ensuite, jamais réécrit.
-    [JsonPropertyName("content")] public string LegacyContent { get; set; } = "";
-    [JsonPropertyName("richText")] public string? LegacyRichText { get; set; }
+    // Note d'avant les onglets : relu à la migration, remis à null ensuite, donc plus écrit dans le fichier.
+    [JsonPropertyName("content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LegacyContent { get; set; }
+    [JsonPropertyName("richText"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LegacyRichText { get; set; }
 
     public string BackColor { get; set; } = Theme.DefaultNoteBack;
     public string ForeColor { get; set; } = Theme.DefaultNoteFore;
@@ -59,16 +61,9 @@ public sealed class Note
         EnsureTabs();
     }
 
-    /// <summary>Onglet affiché : l'onglet mémorisé, sinon le premier.</summary>
+    /// <summary>Onglet affiché : l'onglet mémorisé, sinon le premier. Lecture seule : ne répare rien (voir EnsureTabs).</summary>
     [JsonIgnore]
-    public NoteTab? ActiveTab
-    {
-        get
-        {
-            EnsureTabs();
-            return Tabs.FirstOrDefault(t => t.Id == ActiveTabId) ?? Tabs.FirstOrDefault();
-        }
-    }
+    public NoteTab? ActiveTab => Tabs.FirstOrDefault(t => t?.Id == ActiveTabId) ?? Tabs.FirstOrDefault(t => t is not null);
 
     /// <summary>Contenu de l'onglet actif : sert au titre automatique et à l'éditeur.</summary>
     [JsonIgnore]
@@ -117,7 +112,13 @@ public sealed class Note
     {
         bool hasText = !string.IsNullOrEmpty(LegacyContent);
         bool hasRich = !string.IsNullOrEmpty(LegacyRichText);
-        if (!hasText && !hasRich) return false;
+        if (!hasText && !hasRich)
+        {
+            // Champs vides laissés par d'anciennes versions : effacés pour ne plus être réécrits.
+            LegacyContent = null;
+            LegacyRichText = null;
+            return false;
+        }
 
         EnsureTabs();
         bool tabsEmpty = Tabs.All(t => string.IsNullOrEmpty(t.Content) && string.IsNullOrEmpty(t.RichText));
@@ -135,7 +136,7 @@ public sealed class Note
         target.Content = LegacyContent ?? "";
         target.RichText = hasRich ? LegacyRichText : null;
         ActiveTabId = target.Id;
-        LegacyContent = "";
+        LegacyContent = null;
         LegacyRichText = null;
         return true;
     }
