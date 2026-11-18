@@ -22,6 +22,7 @@ public sealed class MainForm : Form
     // Notes dont le dernier enregistrement a échoué (fichier verrouillé, disque plein…) : réessayées ensuite.
     private readonly HashSet<Note> _unsaved = new();
     private string? _saveError;
+    private bool _uiSaveFailed;
     private readonly ToolTip _tip = new();
     private readonly DarkToolTip _dateTip = new();
     private readonly System.Windows.Forms.Timer _autosave = new() { Interval = 1200 };
@@ -1656,6 +1657,8 @@ public sealed class MainForm : Form
             parts.Add($"{_body.Text.Length} caractères");
             parts.Add($"modifiée {_current.ModifiedAt:HH:mm:ss}");
         }
+        if (_uiSaveFailed)
+            parts.Add("⚠ Ordre des notes et réglages non enregistrés (ui.json inaccessible)");
         if (_saveError is not null)
             parts.Add($"⚠ Échec d'enregistrement de {_unsaved.Count} note(s), nouvel essai en cours : {_saveError}");
         if (_store.LastLoadFailures > 0)
@@ -1799,7 +1802,7 @@ public sealed class MainForm : Form
     {
         // Fenêtre agrandie ou réduite : on garde sa taille « normale », pas celle de l'écran ni -32000.
         var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
-        _store.SaveUi(new UiState
+        bool saved = _store.SaveUi(new UiState
         {
             Width = bounds.Width,
             Height = bounds.Height,
@@ -1812,5 +1815,8 @@ public sealed class MainForm : Form
             WordWrap = _wordWrap.Checked,
             NoteOrder = _all.Select(n => n.Id).ToList(),
         });
+        if (saved == !_uiSaveFailed) return;   // rien de changé : pas de rafraîchissement inutile
+        _uiSaveFailed = !saved;
+        if (!IsDisposed) UpdateStatus();
     }
 }

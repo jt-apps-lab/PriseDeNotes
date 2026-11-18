@@ -456,7 +456,7 @@ public sealed class NotesOverviewForm : Form
                 {
                     using var entry = archive.CreateEntry(EntryName(used, note)).Open();
                     using var writer = new StreamWriter(entry, new UTF8Encoding(false));
-                    writer.Write(_store.JsonFor(note));
+                    writer.Write(NoteStore.JsonFor(note));
                 }
             }
             File.Move(temp, dialog.FileName, overwrite: true);

@@ -19,4 +19,12 @@
     <EmbeddedResource Include="Assets\AppIcon.ico" LogicalName="PriseDeNotes.AppIcon.ico" />
   </ItemGroup>
 
+  <!-- Le projet de tests vit dans un sous-dossier : l'application ne doit pas compiler ses fichiers. -->
+  <ItemGroup>
+    <Compile Remove="PriseDeNotes.Tests\**" />
+    <EmbeddedResource Remove="PriseDeNotes.Tests\**" />
+    <None Remove="PriseDeNotes.Tests\**" />
+    <InternalsVisibleTo Include="PriseDeNotes.Tests" />
+  </ItemGroup>
+
 </Project>

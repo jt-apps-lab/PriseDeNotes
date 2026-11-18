@@ -7,6 +7,7 @@ internal static class Program
 {
     /// <summary>Nom du verrou d'instance : un seul par session Windows (préfixe Local\).</summary>
     private const string InstanceMutexName = @"Local\PriseDeNotes.Instance";
+    private const long MaxLogBytes = 1024 * 1024;
 
     [STAThread]
     private static void Main(string[] args)
@@ -20,11 +21,9 @@ internal static class Program
         {
             if (e.ExceptionObject is Exception ex) ReportError(ex, canContinue: false);
         };
-        var store = new NoteStore();
-
         if (args.Contains("--diag"))
         {
-            var f = new MainForm(store);
+            var f = new MainForm(new NoteStore());
             f.Shown += (_, _) =>
             {
                 var dir = Environment.GetEnvironmentVariable("TMPDIR");
@@ -46,14 +45,23 @@ internal static class Program
             return;
         }
 
-        Application.Run(new MainForm(store));
+        // Créé après le verrou : la récupération des fichiers .tmp ne doit pas courir pendant
+        // qu'une autre instance écrit les siens.
+        Application.Run(new MainForm(new NoteStore()));
     }
 
     private static void ReportError(Exception error, bool canContinue)
     {
         string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "PriseDeNotes", "erreurs.log");
-        try { File.AppendAllText(log, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {error}{Environment.NewLine}{Environment.NewLine}"); }
+        try
+        {
+            // Journal borné : au-delà de 1 Mo, il devient erreurs.old.log (l'ancien est remplacé).
+            var info = new FileInfo(log);
+            if (info.Exists && info.Length > MaxLogBytes)
+                File.Move(log, Path.ChangeExtension(log, ".old.log"), overwrite: true);
+            File.AppendAllText(log, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {error}{Environment.NewLine}{Environment.NewLine}");
+        }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
         try
@@ -67,7 +75,24 @@ internal static class Program
         catch { /* affichage impossible : le journal suffit */ }
     }
 
+    /// <summary>
+    /// Ramène au premier plan la fenêtre de l'instance déjà lancée. Elle peut être encore en train de
+    /// s'ouvrir : on la cherche pendant quelques secondes. Introuvable, on le dit au lieu de se fermer sans rien montrer.
+    /// </summary>
     private static void ActivateRunningInstance()
+    {
+        for (int attempt = 0; attempt < 20; attempt++)
+        {
+            if (TryActivateOtherWindow()) return;
+            Thread.Sleep(250);
+        }
+        MessageBox.Show(
+            "Prise de notes est déjà ouverte, mais sa fenêtre ne répond pas.\n\n"
+            + "Attendez quelques secondes et réessayez, ou fermez « PriseDeNotes » dans le Gestionnaire des tâches.",
+            "Prise de notes", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private static bool TryActivateOtherWindow()
     {
         using var current = Process.GetCurrentProcess();
         foreach (var other in Process.GetProcessesByName(current.ProcessName))
@@ -77,9 +102,10 @@ internal static class Program
                 if (other.Id == current.Id || other.MainWindowHandle == IntPtr.Zero) continue;
                 if (IsIconic(other.MainWindowHandle)) ShowWindow(other.MainWindowHandle, 9); // SW_RESTORE
                 SetForegroundWindow(other.MainWindowHandle);
-                return;
+                return true;
             }
         }
+        return false;
     }
 
     [DllImport("user32.dll")]

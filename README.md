@@ -54,6 +54,17 @@ dotnet build -c Release   # version distribuée : bin\Release\net8.0-windows\Pri
 dotnet run
 ```
 
+### Tests
+
+```
+dotnet test PriseDeNotes.Tests
+```
+
+Le projet `PriseDeNotes.Tests` (xUnit) vérifie le modèle, l'enregistrement (migration, fichiers `.tmp`,
+archive et restauration) et la fenêtre principale (numéros de ligne, renommage d'onglet, échec
+d'enregistrement…). Les tests travaillent dans un dossier temporaire et ne touchent jamais aux vraies notes ;
+ceux de la fenêtre ouvrent brièvement de vraies fenêtres et demandent donc une session Windows avec bureau.
+
 ## Où sont les notes
 
 Dans `%APPDATA%\PriseDeNotes\` :
@@ -65,12 +76,15 @@ Dans `%APPDATA%\PriseDeNotes\` :
 
 Une **archive** créée par « Archiver » contient un fichier `.json` par note, nommé d'après son titre :
 même format que ci-dessus, donc lisible et éditable à la main. « Restaurer » relit ces archives,
-ou des fichiers `.json` pris un par un ; chaque note importée reçoit un identifiant neuf.
+ou des fichiers `.json` pris un par un ; chaque note importée reçoit un identifiant neuf et garde ses dates.
+Une note identique à une note déjà présente n'est pas réimportée.
 
 Un fichier illisible est ignoré au chargement et jamais supprimé ; le nombre de fichiers illisibles est
 signalé dans la barre d'état. Chaque enregistrement passe par un fichier temporaire `.tmp` remplacé
-d'un coup : une coupure pendant l'écriture laisse la version précédente intacte.
+d'un coup : une coupure pendant l'écriture laisse la version précédente intacte. Au démarrage, un `.tmp`
+complet resté après un plantage est remis en place, un `.tmp` tronqué est effacé.
 Une seule fenêtre de l'application peut être ouverte à la fois.
+Les erreurs inattendues sont consignées dans `erreurs.log` (au-delà de 1 Mo, il devient `erreurs.old.log`).
 
 ## Architecture
 

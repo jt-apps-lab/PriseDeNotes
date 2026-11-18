@@ -29,6 +29,9 @@ public sealed class NoteStore
         Folder = Path.Combine(baseDir, "notes");
         UiFile = Path.Combine(baseDir, "ui.json");
         System.IO.Directory.CreateDirectory(Folder);
+        // Avant toute lecture : ui.json comme les notes doivent déjà être dans leur dernière version.
+        // (Program ne crée le NoteStore qu'une fois sûr d'être la seule instance.)
+        RecoverTempFiles();
     }
 
     public string PathFor(Guid id) => Path.Combine(Folder, id.ToString("N") + ".json");
@@ -62,6 +65,37 @@ public sealed class NoteStore
         }
         LastLoadFailures = failed;
         return list;
+    }
+
+    /// <summary>
+    /// Traite les « .tmp » laissés par un plantage pendant un enregistrement (voir WriteAtomic) :
+    /// un temporaire complet et lisible est la version la plus récente, il remplace le fichier ;
+    /// un temporaire tronqué (plantage pendant son écriture) est effacé, l'original étant intact.
+    /// </summary>
+    private void RecoverTempFiles()
+    {
+        var temps = Directory.EnumerateFiles(Folder, "*.json.tmp").ToList();
+        if (File.Exists(UiFile + ".tmp")) temps.Add(UiFile + ".tmp");
+        foreach (var temp in temps)
+        {
+            var target = temp[..^".tmp".Length];
+            try
+            {
+                string text = File.ReadAllText(temp);
+                bool isUi = temp == UiFile + ".tmp";
+                bool complete = isUi ? IsValidUi(text) : ReadNote(text, out _) is not null;
+                if (complete) File.Move(temp, target, overwrite: true);
+                else File.Delete(temp);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    private static bool IsValidUi(string json)
+    {
+        try { return JsonSerializer.Deserialize<UiState>(json, JsonOpts) is not null; }
+        catch (JsonException) { return false; }
     }
 
     /// <summary>Nombre de fichiers de note illisibles au dernier chargement (averti dans la barre d'état).</summary>
@@ -111,18 +145,11 @@ public sealed class NoteStore
             Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
     }
 
-    /// <summary>Le JSON d'une note : le fichier sur disque s'il existe (le plus fidèle), sinon une sérialisation.</summary>
-    public string JsonFor(Note note)
-    {
-        try
-        {
-            var path = PathFor(note.Id);
-            if (File.Exists(path)) return File.ReadAllText(path);
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-        return Serialize(note);
-    }
+    /// <summary>
+    /// Le JSON d'une note, tiré de la note en mémoire : c'est la version la plus récente,
+    /// même quand son dernier enregistrement sur disque a échoué.
+    /// </summary>
+    public static string JsonFor(Note note) => Serialize(note);
 
     /// <summary>Relit un JSON de note (mêmes règles que le chargement), sans rien écrire. Null si illisible.</summary>
     public static Note? ParseNote(string json) => ReadNote(json, out _);
@@ -237,10 +264,18 @@ public sealed class NoteStore
         catch { return null; }
     }
 
-    public void SaveUi(UiState ui)
+    /// <summary>Enregistre la fenêtre, les réglages et l'ordre des notes. false si l'écriture a échoué.</summary>
+    public bool SaveUi(UiState ui)
     {
-        try { WriteAtomic(UiFile, JsonSerializer.Serialize(ui, JsonOpts)); }
-        catch { /* fenêtre fermée : non critique */ }
+        try
+        {
+            WriteAtomic(UiFile, JsonSerializer.Serialize(ui, JsonOpts));
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 }
 
